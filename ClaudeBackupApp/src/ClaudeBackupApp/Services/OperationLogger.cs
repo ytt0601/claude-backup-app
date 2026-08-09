@@ -48,11 +48,21 @@ public sealed class OperationLogger : IDisposable
         {
             _writer?.WriteLine($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} [{level}] {message}");
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // ログファイルへの書き込み失敗は処理継続を優先し無視する
         }
     }
 
-    public void Dispose() => _writer?.Dispose();
+    public void Dispose()
+    {
+        try
+        {
+            _writer?.Dispose();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // ログファイルのクローズ失敗は、バックアップ/リストア自体の成否に影響させない
+        }
+    }
 }

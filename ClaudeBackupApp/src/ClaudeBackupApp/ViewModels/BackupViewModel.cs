@@ -30,6 +30,7 @@ public partial class BackupViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(RunBackupCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ChangeDestinationCommand))]
     private bool isBusy;
 
     [ObservableProperty]
@@ -46,7 +47,7 @@ public partial class BackupViewModel : ObservableObject
                 new CategoryOptionViewModel(c.Id, c.DisplayName, c.DefaultEnabled, c.ContainsSensitiveData)));
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanChangeDestination))]
     private void ChangeDestination()
     {
         var dialog = new OpenFolderDialog
@@ -58,22 +59,38 @@ public partial class BackupViewModel : ObservableObject
         if (dialog.ShowDialog() == true)
         {
             DestinationFolder = dialog.FolderName;
-            _settingsService.Save(new AppSettings { DefaultBackupFolder = DestinationFolder });
+
+            try
+            {
+                _settingsService.Save(new AppSettings { DefaultBackupFolder = DestinationFolder });
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                MessageBox.Show(
+                    Application.Current.MainWindow,
+                    $"保存先の設定を保存できませんでした: {ex.Message}",
+                    "エラー",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
         }
     }
+
+    private bool CanChangeDestination() => !IsBusy;
 
     [RelayCommand(CanExecute = nameof(CanRunBackup))]
     private async Task RunBackupAsync()
     {
-        if (_processService.IsRunning())
+        while (_processService.IsRunning())
         {
             var result = MessageBox.Show(
-                "Claude Desktopが起動中です。データの整合性のため、終了してから実行することを推奨します。\nこのまま続行しますか?",
+                Application.Current.MainWindow,
+                "Claude Desktopが起動中です。データの整合性のため、Claude Desktopを終了してから「OK」を押して再試行してください。\n中断する場合は「キャンセル」を押してください。",
                 "Claude起動中",
-                MessageBoxButton.YesNo,
+                MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning);
 
-            if (result != MessageBoxResult.Yes)
+            if (result != MessageBoxResult.OK)
             {
                 return;
             }
@@ -82,7 +99,7 @@ public partial class BackupViewModel : ObservableObject
         var selectedIds = Categories.Where(c => c.IsChecked).Select(c => c.Id).ToList();
         if (selectedIds.Count == 0)
         {
-            MessageBox.Show("バックアップ対象を1つ以上選択してください。", "確認", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(Application.Current.MainWindow, "バックアップ対象を1つ以上選択してください。", "確認", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 

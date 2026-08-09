@@ -26,6 +26,7 @@ public partial class RestoreViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(RunRestoreCommand))]
+    [NotifyCanExecuteChangedFor(nameof(SelectBackupFileCommand))]
     private bool isBusy;
 
     [ObservableProperty]
@@ -41,7 +42,7 @@ public partial class RestoreViewModel : ObservableObject
     [ObservableProperty]
     private string statusText = string.Empty;
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanSelectBackupFile))]
     private async Task SelectBackupFileAsync()
     {
         var dialog = new OpenFileDialog
@@ -63,7 +64,7 @@ public partial class RestoreViewModel : ObservableObject
             Categories.Clear();
             foreach (var category in _manifest.Categories)
             {
-                Categories.Add(new CategoryOptionViewModel(category.Id, category.DisplayName, isChecked: true, category.ContainsSensitiveData));
+                Categories.Add(new CategoryOptionViewModel(category.Id, category.DisplayName, isChecked: !category.ContainsSensitiveData, category.ContainsSensitiveData));
             }
 
             ManifestSummary =
@@ -78,9 +79,11 @@ public partial class RestoreViewModel : ObservableObject
             _manifest = null;
             Categories.Clear();
             ManifestSummary = $"読み込みエラー: {ex.Message}";
-            MessageBox.Show(ManifestSummary, "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(Application.Current.MainWindow, ManifestSummary, "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    private bool CanSelectBackupFile() => !IsBusy;
 
     [RelayCommand(CanExecute = nameof(CanRunRestore))]
     private async Task RunRestoreAsync()
@@ -93,25 +96,27 @@ public partial class RestoreViewModel : ObservableObject
         var selectedIds = Categories.Where(c => c.IsChecked).Select(c => c.Id).ToList();
         if (selectedIds.Count == 0)
         {
-            MessageBox.Show("リストア対象を1つ以上選択してください。", "確認", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(Application.Current.MainWindow, "リストア対象を1つ以上選択してください。", "確認", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        if (_processService.IsRunning())
+        while (_processService.IsRunning())
         {
             var result = MessageBox.Show(
-                "Claude Desktopが起動中です。復元内容が正しく反映されない可能性があります。終了してから実行することを推奨します。\nこのまま続行しますか?",
+                Application.Current.MainWindow,
+                "Claude Desktopが起動中です。復元内容が正しく反映されない可能性があります。Claude Desktopを終了してから「OK」を押して再試行してください。\n中断する場合は「キャンセル」を押してください。",
                 "Claude起動中",
-                MessageBoxButton.YesNo,
+                MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning);
 
-            if (result != MessageBoxResult.Yes)
+            if (result != MessageBoxResult.OK)
             {
                 return;
             }
         }
 
         var confirm = MessageBox.Show(
+            Application.Current.MainWindow,
             "選択したカテゴリを復元します。上書きされる既存ファイルは復元前に自動的に退避されます。\n実行しますか?",
             "リストアの確認",
             MessageBoxButton.YesNo,

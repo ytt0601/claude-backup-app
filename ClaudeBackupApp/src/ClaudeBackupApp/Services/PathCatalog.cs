@@ -90,6 +90,38 @@ public static class PathCatalog
     private static BackupSourceEntry DirEntry(string path) => new() { AbsolutePath = path, Kind = SourceKind.Directory };
 
     /// <summary>
+    /// 要件定義書 4章「除外対象」に列挙されているキャッシュ・診断ログ・再生成可能なデータのフォルダ名。
+    /// 現状はSourcesの対象パス外に位置するため実害はないが、将来Claude側の内部構成が変わり
+    /// これらがSources配下にネストされても黙って取り込まれないよう、列挙時に明示的に除外する。
+    /// </summary>
+    private static readonly string[] ExcludedDirectoryNames =
+    {
+        // %APPDATA%\Claude\ 配下
+        "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
+        "IndexedDB", "Local Storage", "Session Storage", "Shared Dictionary", "WebStorage",
+        "Network", "Crashpad", "Partitions", "DIPS", "SharedStorage", "blob_storage", "claude-code",
+        // %USERPROFILE%\.claude\ 配下
+        "cache", "chrome", "downloads", "paste-cache", "backups", "session-env",
+        "debug", "telemetry", "shell-snapshots",
+    };
+
+    private static bool IsExcludedRelativePath(string relativePath)
+    {
+        foreach (var segment in relativePath.Split('/', '\\'))
+        {
+            foreach (var excluded in ExcludedDirectoryNames)
+            {
+                if (string.Equals(segment, excluded, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// カテゴリ内の実在するファイルを (絶対パス, ZIPエントリ名) の組として列挙する。
     /// 存在しないファイル・フォルダは黙ってスキップする(未使用機能などで未生成の場合があるため)。
     /// フォルダの列挙自体が権限不足等で失敗した場合は、そのソースだけをスキップし
@@ -131,6 +163,11 @@ public static class PathCatalog
             foreach (var file in files)
             {
                 var relative = Path.GetRelativePath(source.AbsolutePath, file).Replace('\\', '/');
+                if (IsExcludedRelativePath(relative))
+                {
+                    continue;
+                }
+
                 yield return (file, $"{category.ZipFolderName}/{dirName}/{relative}");
             }
         }

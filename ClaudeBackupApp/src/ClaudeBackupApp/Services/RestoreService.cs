@@ -20,7 +20,12 @@ public class RestoreService
 
         await using var stream = entry.Open();
         var manifest = await JsonSerializer.DeserializeAsync<BackupManifest>(stream, cancellationToken: cancellationToken);
-        return manifest ?? throw new InvalidDataException("manifest.jsonの読み込みに失敗しました。");
+        if (manifest is null || manifest.Categories is null)
+        {
+            throw new InvalidDataException("manifest.jsonの内容が不正です。有効なバックアップファイルではない可能性があります。");
+        }
+
+        return manifest;
     }
 
     /// <summary>
@@ -30,9 +35,20 @@ public class RestoreService
     /// 復元先は PathCatalog.IsAllowedRestoreDestination で正規のClaude関連パス配下であることを
     /// 必ず検証してから書き込む。RootKind/RelativePathが記録されている場合は、現在の環境の
     /// %APPDATA%・%USERPROFILE%を基準に復元先を再解決する(別マシン/別ユーザーアカウントへの復元に対応)。
+    /// ファイルI/Oはすべて同期APIのため、UIスレッドをブロックしないよう全体をバックグラウンドスレッドで実行する。
     /// </summary>
     /// <returns>今回の退避先フォルダ(何も退避しなかった場合でもパスは返す)</returns>
-    public async Task<string> RestoreAsync(
+    public Task<string> RestoreAsync(
+        string zipPath,
+        BackupManifest manifest,
+        IReadOnlyList<string> selectedCategoryIds,
+        IProgress<OperationProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        return Task.Run(() => RestoreCore(zipPath, manifest, selectedCategoryIds, progress, cancellationToken), cancellationToken);
+    }
+
+    private static string RestoreCore(
         string zipPath,
         BackupManifest manifest,
         IReadOnlyList<string> selectedCategoryIds,
@@ -62,6 +78,7 @@ public class RestoreService
                 cancellationToken.ThrowIfCancellationRequested();
                 var file = files[index];
                 var destination = PathCatalog.ResolvePortablePath(file.RootKind, file.RelativePath) ?? file.Destination;
+                string? tempPath = null;
 
                 try
                 {
@@ -80,25 +97,42 @@ public class RestoreService
                         continue;
                     }
 
-                    EvacuateIfExists(destination, evacuationRoot);
-
                     var destinationDir = Path.GetDirectoryName(destination);
                     if (!string.IsNullOrEmpty(destinationDir))
                     {
                         Directory.CreateDirectory(destinationDir);
                     }
 
-                    entry.ExtractToFile(destination, overwrite: true);
+                    // 展開はまず一時ファイルへ行い、成功してから既存ファイルを退避して差し替える。
+                    // こうすることでZIPエントリが壊れている等で展開が失敗しても、既存の元ファイルを失わない。
+                    tempPath = destination + $".restoring_{Guid.NewGuid():N}.tmp";
+                    entry.ExtractToFile(tempPath, overwrite: true);
+
+                    EvacuateIfExists(destination, evacuationRoot);
+                    File.Move(tempPath, destination, overwrite: true);
+                    tempPath = null;
 
                     logger.Report(progress, index + 1, total, destination, LogLevel.Info, $"復元: {destination}");
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or NotSupportedException or PathTooLongException)
                 {
                     logger.Report(progress, index + 1, total, destination, LogLevel.Warning,
-                        $"スキップ(書き込み不可): {destination} ({ex.Message})");
+                        $"スキップ(復元失敗): {destination} ({ex.Message})");
                 }
                 finally
                 {
+                    if (tempPath is not null)
+                    {
+                        try
+                        {
+                            File.Delete(tempPath);
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            // 一時ファイルの削除失敗は処理継続を優先し無視する
+                        }
+                    }
+
                     processedCount = index + 1;
                 }
             }
@@ -116,7 +150,6 @@ public class RestoreService
             logger.Report(progress, processedCount, total, string.Empty, LogLevel.Info, message);
         }
 
-        await Task.CompletedTask;
         return evacuationRoot;
     }
 
