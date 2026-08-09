@@ -1,0 +1,167 @@
+<Window x:Class="ClaudeBackupApp.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:ClaudeBackupApp.ViewModels"
+        Title="Claude設定バックアップ" Height="680" Width="820"
+        MinHeight="560" MinWidth="700"
+        FontFamily="{StaticResource ClaudeBodyFont}"
+        Background="{StaticResource ClaudeBackgroundBrush}"
+        Icon="/Assets/AppIcon.ico">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="208" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ===================== サイドバー ===================== -->
+        <Border Grid.Column="0" Background="{StaticResource ClaudeSidebarBrush}"
+                BorderBrush="{StaticResource ClaudeBorderBrush}" BorderThickness="0,0,1,0">
+            <DockPanel LastChildFill="False">
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="18,20,18,24">
+                    <Image Source="/Assets/AppIcon.ico" Width="30" Height="30" />
+                    <TextBlock Text="Claude設定&#10;バックアップ" Margin="10,0,0,0" VerticalAlignment="Center"
+                               FontFamily="{StaticResource ClaudeHeaderFont}" FontWeight="SemiBold" FontSize="13.5"
+                               Foreground="{StaticResource ClaudeTextPrimaryBrush}" />
+                </StackPanel>
+
+                <StackPanel DockPanel.Dock="Top">
+                    <RadioButton x:Name="NavBackupToggle" GroupName="Nav" Style="{StaticResource SidebarNavItem}"
+                                 Content="バックアップ" IsChecked="True" />
+                    <RadioButton x:Name="NavRestoreToggle" GroupName="Nav" Style="{StaticResource SidebarNavItem}"
+                                 Content="リストア" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- ===================== メインコンテンツ ===================== -->
+        <Grid Grid.Column="1" Margin="32,28,32,28">
+
+            <!-- バックアップ画面 -->
+            <Grid DataContext="{Binding Backup}"
+                  Visibility="{Binding IsChecked, ElementName=NavBackupToggle, Converter={StaticResource BoolToVis}}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0">
+                    <TextBlock Text="バックアップ" Style="{StaticResource PageTitle}" />
+                    <TextBlock Text="Claude Desktop / Claude Code の設定・データを1つのファイルにまとめて保存します。"
+                               Style="{StaticResource PageSubtitle}" />
+                </StackPanel>
+
+                <Border Grid.Row="1" Style="{StaticResource CardBorder}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="バックアップ対象" Style="{StaticResource SectionHeader}" />
+                        <ItemsControl ItemsSource="{Binding Categories}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:CategoryOptionViewModel}">
+                                    <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding DisplayName}" />
+                                            <TextBlock Text=" ・機微情報を含む(共有時は注意)"
+                                                       Foreground="{StaticResource ClaudeWarningBrush}" FontSize="11.5"
+                                                       VerticalAlignment="Center"
+                                                       Visibility="{Binding ContainsSensitiveData, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
+                                    </CheckBox>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="2" Style="{StaticResource CardBorder}" Margin="0,0,0,16">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="保存先" VerticalAlignment="Center" Foreground="{StaticResource ClaudeTextSecondaryBrush}" />
+                        <TextBlock Text="{Binding DestinationFolder}" VerticalAlignment="Center" Margin="10,0,0,0"
+                                   TextTrimming="CharacterEllipsis" MaxWidth="380" />
+                        <Button Content="変更..." VerticalAlignment="Center" Command="{Binding ChangeDestinationCommand}" Margin="16,0,0,0" />
+                    </StackPanel>
+                </Border>
+
+                <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,16">
+                    <Button Content="バックアップ実行" Style="{StaticResource PrimaryButton}" Command="{Binding RunBackupCommand}" />
+                    <Button Content="キャンセル" Command="{Binding CancelBackupCommand}" IsEnabled="{Binding IsBusy}" />
+                </StackPanel>
+
+                <StackPanel Grid.Row="4" Margin="0,0,0,12">
+                    <ProgressBar Minimum="0" Maximum="{Binding ProgressMaximum}" Value="{Binding ProgressValue}" />
+                    <TextBlock Text="{Binding StatusText}" Margin="0,8,0,0" TextWrapping="Wrap"
+                               Foreground="{StaticResource ClaudeTextSecondaryBrush}" FontSize="12" />
+                </StackPanel>
+
+                <ListBox Grid.Row="5" ItemsSource="{Binding LogLines}" />
+            </Grid>
+
+            <!-- リストア画面 -->
+            <Grid DataContext="{Binding Restore}"
+                  Visibility="{Binding IsChecked, ElementName=NavRestoreToggle, Converter={StaticResource BoolToVis}}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0">
+                    <TextBlock Text="リストア" Style="{StaticResource PageTitle}" />
+                    <TextBlock Text="バックアップファイルを選択して、Claudeの設定・データを元の状態に復元します。"
+                               Style="{StaticResource PageSubtitle}" />
+                </StackPanel>
+
+                <Border Grid.Row="1" Style="{StaticResource CardBorder}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <Button Content="バックアップファイルを選択..." Command="{Binding SelectBackupFileCommand}" />
+                            <TextBlock Text="{Binding BackupFilePath}" VerticalAlignment="Center" Margin="8,0,0,0"
+                                       Foreground="{StaticResource ClaudeTextSecondaryBrush}"
+                                       TextTrimming="CharacterEllipsis" MaxWidth="360" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding ManifestSummary}" TextWrapping="Wrap" FontSize="12"
+                                    Foreground="{StaticResource ClaudeTextSecondaryBrush}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="2" Style="{StaticResource CardBorder}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="リストア対象(バックアップに含まれるカテゴリのみ表示)" Style="{StaticResource SectionHeader}" />
+                        <ItemsControl ItemsSource="{Binding Categories}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:CategoryOptionViewModel}">
+                                    <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding DisplayName}" />
+                                            <TextBlock Text=" ・機微情報を含む"
+                                                       Foreground="{StaticResource ClaudeWarningBrush}" FontSize="11.5"
+                                                       VerticalAlignment="Center"
+                                                       Visibility="{Binding ContainsSensitiveData, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
+                                    </CheckBox>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <StackPanel Grid.Row="3" Margin="0,0,0,12">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                        <Button Content="リストア実行" Style="{StaticResource PrimaryButton}" Command="{Binding RunRestoreCommand}" />
+                        <Button Content="キャンセル" Command="{Binding CancelRestoreCommand}" IsEnabled="{Binding IsBusy}" />
+                    </StackPanel>
+                    <ProgressBar Minimum="0" Maximum="{Binding ProgressMaximum}" Value="{Binding ProgressValue}" />
+                    <TextBlock Text="{Binding StatusText}" Margin="0,8,0,0" TextWrapping="Wrap"
+                               Foreground="{StaticResource ClaudeTextSecondaryBrush}" FontSize="12" />
+                </StackPanel>
+
+                <ListBox Grid.Row="4" ItemsSource="{Binding LogLines}" />
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

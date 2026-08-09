@@ -1,0 +1,254 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ===================== カラーパレット (Claudeブランドカラー準拠) ===================== -->
+    <SolidColorBrush x:Key="ClaudeBackgroundBrush" Color="#FAF9F5" />
+    <SolidColorBrush x:Key="ClaudeSidebarBrush" Color="#F0EEE6" />
+    <SolidColorBrush x:Key="ClaudeSurfaceBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="ClaudeBorderBrush" Color="#E5E2D9" />
+    <SolidColorBrush x:Key="ClaudeTextPrimaryBrush" Color="#141413" />
+    <SolidColorBrush x:Key="ClaudeTextSecondaryBrush" Color="#7A796F" />
+
+    <SolidColorBrush x:Key="ClaudeOrangeBrush" Color="#D97757" />
+    <SolidColorBrush x:Key="ClaudeOrangeHoverBrush" Color="#C15F3C" />
+    <SolidColorBrush x:Key="ClaudeOrangePressedBrush" Color="#A94E30" />
+    <SolidColorBrush x:Key="ClaudeOrangeSoftBrush" Color="#F1DDD3" />
+    <SolidColorBrush x:Key="ClaudeWarningBrush" Color="#B54708" />
+
+    <!-- ===================== フォント ===================== -->
+    <FontFamily x:Key="ClaudeHeaderFont">Poppins, Segoe UI Semibold, Segoe UI</FontFamily>
+    <FontFamily x:Key="ClaudeBodyFont">Segoe UI, Arial</FontFamily>
+
+    <BooleanToVisibilityConverter x:Key="BoolToVis" />
+
+    <Style TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource ClaudeBodyFont}" />
+        <Setter Property="Foreground" Value="{StaticResource ClaudeTextPrimaryBrush}" />
+    </Style>
+
+    <!-- ===================== 見出し ===================== -->
+    <Style x:Key="PageTitle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource ClaudeHeaderFont}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontSize" Value="21" />
+        <Setter Property="Foreground" Value="{StaticResource ClaudeTextPrimaryBrush}" />
+        <Setter Property="Margin" Value="0,0,0,4" />
+    </Style>
+
+    <Style x:Key="PageSubtitle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource ClaudeBodyFont}" />
+        <Setter Property="FontSize" Value="12.5" />
+        <Setter Property="Foreground" Value="{StaticResource ClaudeTextSecondaryBrush}" />
+        <Setter Property="Margin" Value="0,0,0,20" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="SectionHeader" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource ClaudeHeaderFont}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontSize" Value="15" />
+        <Setter Property="Foreground" Value="{StaticResource ClaudeTextPrimaryBrush}" />
+        <Setter Property="Margin" Value="0,0,0,8" />
+    </Style>
+
+    <!-- ===================== ボタン(セカンダリ: 既定) ===================== -->
+    <Style TargetType="Button">
+        <Setter Property="FontFamily" Value="{StaticResource ClaudeBodyFont}" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="{StaticResource ClaudeTextPrimaryBrush}" />
+        <Setter Property="Padding" Value="16,8" />
+        <Setter Property="Margin" Value="0,0,8,0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="Transparent"
+                            BorderBrush="{StaticResource ClaudeBorderBrush}" BorderThickness="1"
+                            CornerRadius="9">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource ClaudeSidebarBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource ClaudeBorderBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ===================== ボタン(プライマリ: 実行系) ===================== -->
+    <Style x:Key="PrimaryButton" TargetType="Button">
+        <Setter Property="FontFamily" Value="{StaticResource ClaudeHeaderFont}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="{StaticResource ClaudeBackgroundBrush}" />
+        <Setter Property="Padding" Value="20,9" />
+        <Setter Property="Margin" Value="0,0,8,0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{StaticResource ClaudeOrangeBrush}"
+                            CornerRadius="9">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource ClaudeOrangeHoverBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource ClaudeOrangePressedBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ===================== サイドバー ナビゲーション項目 ===================== -->
+    <Style x:Key="SidebarNavItem" TargetType="RadioButton">
+        <Setter Property="FontFamily" Value="{StaticResource ClaudeHeaderFont}" />
+        <Setter Property="FontSize" Value="13.5" />
+        <Setter Property="Foreground" Value="{StaticResource ClaudeTextPrimaryBrush}" />
+        <Setter Property="Padding" Value="14,10" />
+        <Setter Property="Margin" Value="10,2" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border x:Name="Bd" Background="Transparent" CornerRadius="9">
+                        <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#E5E2D6" />
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource ClaudeOrangeSoftBrush}" />
+                            <Setter Property="Foreground" Value="{StaticResource ClaudeOrangePressedBrush}" />
+                            <Setter Property="FontWeight" Value="SemiBold" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ===================== チェックボックス ===================== -->
+    <Style TargetType="CheckBox">
+        <Setter Property="FontFamily" Value="{StaticResource ClaudeBodyFont}" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="{StaticResource ClaudeTextPrimaryBrush}" />
+        <Setter Property="Margin" Value="0,5" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <StackPanel Orientation="Horizontal">
+                        <Border x:Name="Box" Width="18" Height="18" CornerRadius="5"
+                                Background="{StaticResource ClaudeSurfaceBrush}"
+                                BorderBrush="{StaticResource ClaudeBorderBrush}" BorderThickness="1.4"
+                                VerticalAlignment="Center">
+                            <Path x:Name="Check" Data="M2,7 L6,11 L14,2" Stroke="{StaticResource ClaudeBackgroundBrush}"
+                                  StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round" Visibility="Collapsed" />
+                        </Border>
+                        <ContentPresenter Margin="9,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Box" Property="Background" Value="{StaticResource ClaudeOrangeBrush}" />
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource ClaudeOrangeBrush}" />
+                            <Setter TargetName="Check" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource ClaudeOrangeBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ===================== プログレスバー ===================== -->
+    <Style TargetType="ProgressBar">
+        <Setter Property="Height" Value="10" />
+        <Setter Property="Background" Value="{StaticResource ClaudeBorderBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource ClaudeOrangeBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ProgressBar">
+                    <Border CornerRadius="5" Background="{TemplateBinding Background}">
+                        <Grid ClipToBounds="True">
+                            <Border x:Name="PART_Track" CornerRadius="5" />
+                            <Border x:Name="PART_Indicator" CornerRadius="5"
+                                    Background="{TemplateBinding Foreground}"
+                                    HorizontalAlignment="Left" />
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ===================== ログ表示(ListBox) ===================== -->
+    <Style TargetType="ListBox">
+        <Setter Property="FontFamily" Value="Cascadia Mono, Consolas" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="Background" Value="{StaticResource ClaudeSurfaceBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource ClaudeTextSecondaryBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ClaudeBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="6" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBox">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="10">
+                        <ScrollViewer Padding="{TemplateBinding Padding}" VerticalScrollBarVisibility="Auto">
+                            <ItemsPresenter />
+                        </ScrollViewer>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ListBoxItem">
+        <Setter Property="Padding" Value="2,1" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ===================== カード風パネル ===================== -->
+    <Style x:Key="CardBorder" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource ClaudeSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ClaudeBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="12" />
+        <Setter Property="Padding" Value="16" />
+    </Style>
+
+</ResourceDictionary>
