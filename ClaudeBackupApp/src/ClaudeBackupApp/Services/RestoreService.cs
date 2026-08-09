@@ -78,12 +78,17 @@ public class RestoreService
 
         // archive.GetEntry(string) はエントリ数分の線形探索になるため、ファイル数が多いリストアで
         // O(n^2) にならないよう、事前に名前引きの辞書を作っておく。
-        // (同名エントリが複数ある場合は GetEntry と同じく「後に見つかったもの」を優先する。)
+        // (同名エントリが複数ある場合は GetEntry と同じく「最初に見つかったもの」を優先する。)
         var entriesByName = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
         foreach (var e in archive.Entries)
         {
-            entriesByName[e.FullName] = e;
+            entriesByName.TryAdd(e.FullName, e);
         }
+
+        // manifest.json は信用できないため、複数のファイルが同じ復元先を指すよう細工されている
+        // 可能性がある。退避先の一意化だけでは復元先本体への上書きは防げないため、同一リストア内で
+        // 既に復元済みの復元先は無警告で上書きせず、最初の1件のみを復元してスキップする。
+        var restoredDestinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var files = manifest.Categories
             .Where(c => selectedCategoryIds.Contains(c.Id))
@@ -112,6 +117,13 @@ public class RestoreService
                         continue;
                     }
 
+                    if (!restoredDestinations.Add(Path.GetFullPath(destination)))
+                    {
+                        logger.Report(progress, index + 1, total, destination, LogLevel.Warning,
+                            $"スキップ(復元先が重複): {destination} は同一リストア内の別のファイルと復元先が重複しているため、最初の1件のみ復元しました。");
+                        continue;
+                    }
+
                     if (string.IsNullOrEmpty(file.ZipEntry) || !entriesByName.TryGetValue(file.ZipEntry, out var entry))
                     {
                         logger.Report(progress, index + 1, total, destination, LogLevel.Warning,
@@ -137,10 +149,12 @@ public class RestoreService
                         File.Move(tempPath, destination, overwrite: true);
                         tempPath = null;
                     }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
                     {
                         // 最終移動が失敗した場合、直前に退避しておいた元ファイルを復元先へ戻し、
                         // 復元先に新旧どちらのファイルも無い状態を避ける。
+                        // (下の外側catchが捕捉する例外種別と揃えておかないと、ここでの復旧が
+                        // 行われないまま外側catchに抜けてしまう。)
                         if (evacuatedPath is not null)
                         {
                             try

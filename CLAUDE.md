@@ -43,7 +43,7 @@ MVVM構成(CommunityToolkit.Mvvm使用)。`MainViewModel` が `BackupViewModel` 
 
 **リストアの安全な差し替え手順**: `RestoreService.RestoreCore` は「一時ファイルへ展開→成功したら既存ファイルを退避フォルダ(`%LOCALAPPDATA%\ClaudeBackupApp\PreRestoreEvacuation\yyyyMMdd_HHmmss\`)へ移動→一時ファイルを本来の場所へ移動」の順で行う。ZIPエントリ破損などで展開が失敗しても既存ファイルを失わないようにするための順序であり、変更しないこと。
 
-**Claude Desktop起動中の検知**: `ClaudeProcessService` はプロセス名 `claude` で列挙した上で、`FileVersionInfo.ProductName` が `"Claude"`(Electron製Desktop本体)のものだけを数える。ターミナルの `claude` CLIやDesktop内蔵の `claude-code` バイナリも同じ実行ファイル名 `claude.exe` だが製品名が異なる(`"Claude Code"`)ため区別できる。モジュール情報取得に失敗した場合は「起動中かもしれない」側(true)に倒す安全側フォールバックになっている。
+**Claude Desktop起動中の検知**: `ClaudeProcessService` はプロセス名 `claude` で列挙した上で、`FileVersionInfo.ProductName` が `"Claude Code"`(ターミナルの `claude` CLIやDesktop内蔵の `claude-code` バイナリ)と一致するものだけを除外し、それ以外はすべてDesktop本体(Electron製、製品名 `"Claude"`)として数える。積極的に「CLIだ」と判定できたものだけを除外し、それ以外(将来Desktop側の製品名表記が変わった場合や、モジュール情報取得に失敗した場合を含む)は「起動中かもしれない」側(true)に倒す安全側の実装になっている。
 
 **進捗・ログ**: `OperationLogger` が `IProgress<OperationProgress>` へのUI通知と `%APPDATA%\ClaudeBackupApp\Logs\` へのログファイル出力を一箇所に集約する。`BackupService` / `RestoreService` の重複ロジックをまとめたものなので、進捗報告を追加する場合はここを経由させる。ログ書き込みは `AutoFlush = true`(1件ごとに同期フラッシュ)で、クラッシュ時にもログを失わないための意図的な設計。大量ファイル処理時のパフォーマンス調査をする際は、退避処理などのファイル操作そのものより、まずここを疑うこと(こちらは「リストアの安全な差し替え手順」とは異なり変更禁止ではないので、`BackupService` との共有箇所であることに注意すれば見直して構わない)。
 
