@@ -12,8 +12,9 @@ public class BackupService
     /// <summary>
     /// 選択されたカテゴリの対象ファイルをZIPにまとめ、manifest.jsonを添えて出力する。
     /// 使用中などで読み取れないファイルはスキップし、警告ログとして報告のうえ処理を継続する。
-    /// 機微情報カテゴリ(認証情報等)が1件でも含まれる場合は、共有時に気づけるようZIPファイル名に
-    /// マーカーを付与する。
+    /// 機微情報カテゴリ(認証情報等)の対象ファイルが1件でも実在する場合は、共有時に気づけるよう
+    /// ZIP作成時点でファイル名にマーカーを付与する(作成後にリネームする方式は、リネーム自体が
+    /// 失敗した場合にマーカーが付かないまま残る失敗モードを生むため採らない)。
     /// ファイル列挙・ZIP書き込みはいずれも同期APIを含むため、UIスレッドをブロックしないよう
     /// 全体をバックグラウンドスレッドで実行する。
     /// </summary>
@@ -36,7 +37,6 @@ public class BackupService
         Directory.CreateDirectory(destinationFolder);
 
         var timestamp = DateTimeOffset.Now;
-        var zipPath = Path.Combine(destinationFolder, $"ClaudeBackup_{timestamp:yyyyMMdd_HHmmss}.zip");
 
         using var logger = new OperationLogger("Backup");
 
@@ -50,6 +50,11 @@ public class BackupService
                 .Select(f => (Category: category, f.AbsolutePath, f.ZipEntry)))
             .ToList();
 
+        // 機微情報を含むカテゴリの対象ファイルが実在するかどうかは、ZIPを開く前のこの時点で判定できる。
+        var hasSensitiveSource = plan.Any(p => p.Category.ContainsSensitiveData);
+        var zipFileNameSuffix = hasSensitiveSource ? "_Credentials" : string.Empty;
+        var zipPath = Path.Combine(destinationFolder, $"ClaudeBackup_{timestamp:yyyyMMdd_HHmmss}{zipFileNameSuffix}.zip");
+
         var manifestCategories = categories.ToDictionary(
             c => c.Id,
             c => new BackupManifestCategory
@@ -57,13 +62,12 @@ public class BackupService
                 Id = c.Id,
                 DisplayName = c.DisplayName,
                 ContainsSensitiveData = c.ContainsSensitiveData,
+                DefaultEnabled = c.DefaultEnabled,
             });
 
         var plannedCountByCategory = plan
             .GroupBy(p => p.Category.Id)
             .ToDictionary(g => g.Key, g => g.Count());
-
-        BackupManifest manifest;
 
         try
         {
@@ -125,7 +129,7 @@ public class BackupService
                     }
                 }
 
-                manifest = new BackupManifest
+                var manifest = new BackupManifest
                 {
                     CreatedAt = timestamp,
                     MachineName = Environment.MachineName,
@@ -138,31 +142,16 @@ public class BackupService
                 await JsonSerializer.SerializeAsync(manifestStream, manifest, ManifestJsonOptions, cancellationToken);
             }
         }
-        catch (OperationCanceledException)
+        catch (Exception)
         {
+            // キャンセル・I/Oエラーいずれの場合も、作成途中の壊れたZIPを残さない。
             TryDeleteFile(zipPath);
             throw;
         }
 
-        var finalZipPath = zipPath;
-        if (manifest.Categories.Any(c => c.ContainsSensitiveData))
-        {
-            var markedZipPath = Path.Combine(destinationFolder, $"ClaudeBackup_{timestamp:yyyyMMdd_HHmmss}_Credentials.zip");
-            try
-            {
-                File.Move(zipPath, markedZipPath, overwrite: true);
-                finalZipPath = markedZipPath;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                logger.Report(progress, plan.Count, plan.Count, zipPath, LogLevel.Warning,
-                    $"警告: 機微情報を含むことを示すファイル名へのマーク付けに失敗しました。このZIPには認証情報が含まれています: {zipPath} ({ex.Message})");
-            }
-        }
+        logger.Report(progress, plan.Count, plan.Count, zipPath, LogLevel.Info, $"バックアップ完了: {zipPath}");
 
-        logger.Report(progress, plan.Count, plan.Count, finalZipPath, LogLevel.Info, $"バックアップ完了: {finalZipPath}");
-
-        return finalZipPath;
+        return zipPath;
     }
 
     private static void TryDeleteFile(string path)
@@ -176,7 +165,7 @@ public class BackupService
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // キャンセル時の後始末が失敗しても、キャンセル処理自体は継続する
+            // 後始末が失敗しても、呼び出し元での例外の再送出は継続する
         }
     }
 }

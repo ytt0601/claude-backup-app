@@ -14,6 +14,12 @@ public class BackupManifestCategory
     public string Id { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public bool ContainsSensitiveData { get; set; }
+
+    /// <summary>バックアップ時点でこのカテゴリが既定で有効(チェック済み)だったかどうか。
+    /// リストア画面のチェックボックス初期値に使う。旧形式のバックアップ(このフィールドが無い)では
+    /// nullとなり、呼び出し側で !ContainsSensitiveData にフォールバックする。</summary>
+    public bool? DefaultEnabled { get; set; }
+
     public List<BackupManifestFile> Files { get; set; } = new();
 }
 

@@ -81,6 +81,13 @@ public partial class BackupViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanRunBackup))]
     private async Task RunBackupAsync()
     {
+        var selectedIds = Categories.Where(c => c.IsChecked).Select(c => c.Id).ToList();
+        if (selectedIds.Count == 0)
+        {
+            MessageBox.Show(Application.Current.MainWindow, "バックアップ対象を1つ以上選択してください。", "確認", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
         while (_processService.IsRunning())
         {
             var result = MessageBox.Show(
@@ -94,13 +101,6 @@ public partial class BackupViewModel : ObservableObject
             {
                 return;
             }
-        }
-
-        var selectedIds = Categories.Where(c => c.IsChecked).Select(c => c.Id).ToList();
-        if (selectedIds.Count == 0)
-        {
-            MessageBox.Show(Application.Current.MainWindow, "バックアップ対象を1つ以上選択してください。", "確認", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
         }
 
         IsBusy = true;

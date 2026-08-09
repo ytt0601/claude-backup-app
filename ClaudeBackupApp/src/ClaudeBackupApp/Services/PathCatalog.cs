@@ -14,12 +14,21 @@ public static class PathCatalog
     private static string AppDataDir => Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
     private static string UserProfileDir => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
+    /// <summary>
+    /// このアプリが読み書きしてよいClaude関連ルートパス。BuildCategories(バックアップ対象パスの定義)と
+    /// IsAllowedRestoreDestination(リストア時の書き込み許可判定)の両方がこの一箇所を参照することで、
+    /// 新しいバックアップ対象を追加した際に許可判定側の更新を忘れて復元不能になる事故を防ぐ。
+    /// </summary>
+    private static string ClaudeAppDataDir => Path.Combine(AppDataDir, "Claude");
+    private static string ClaudeHomeDir => Path.Combine(UserProfileDir, ".claude");
+    private static string ClaudeJsonPath => Path.Combine(UserProfileDir, ".claude.json");
+
     public static IReadOnlyList<BackupCategoryDefinition> Categories => BuildCategories();
 
     private static IReadOnlyList<BackupCategoryDefinition> BuildCategories()
     {
-        var claudeAppData = Path.Combine(AppDataDir, "Claude");
-        var claudeHome = Path.Combine(UserProfileDir, ".claude");
+        var claudeAppData = ClaudeAppDataDir;
+        var claudeHome = ClaudeHomeDir;
 
         return new[]
         {
@@ -28,7 +37,7 @@ public static class PathCatalog
                 Id = "desktop-settings",
                 DisplayName = "Claude Desktop設定",
                 DefaultEnabled = true,
-                ContainsSensitiveData = false,
+                ContainsSensitiveData = true,
                 ZipFolderName = "DesktopSettings",
                 Sources = new[]
                 {
@@ -42,11 +51,11 @@ public static class PathCatalog
                 Id = "code-settings",
                 DisplayName = "Claude Code設定",
                 DefaultEnabled = true,
-                ContainsSensitiveData = false,
+                ContainsSensitiveData = true,
                 ZipFolderName = "CodeSettings",
                 Sources = new[]
                 {
-                    FileEntry(Path.Combine(UserProfileDir, ".claude.json")),
+                    FileEntry(ClaudeJsonPath),
                     FileEntry(Path.Combine(claudeHome, "settings.json")),
                     DirEntry(Path.Combine(claudeHome, "plugins")),
                     DirEntry(Path.Combine(claudeHome, "skills")),
@@ -124,8 +133,9 @@ public static class PathCatalog
     /// <summary>
     /// カテゴリ内の実在するファイルを (絶対パス, ZIPエントリ名) の組として列挙する。
     /// 存在しないファイル・フォルダは黙ってスキップする(未使用機能などで未生成の場合があるため)。
-    /// フォルダの列挙自体が権限不足等で失敗した場合は、そのソースだけをスキップし
-    /// (<paramref name="onWarning"/>で通知したうえで)他のソースの処理は継続する。
+    /// フォルダの列挙自体が権限不足等で失敗した場合は、その原因となった個別のサブフォルダだけを
+    /// スキップし(<paramref name="onWarning"/>で通知したうえで)、兄弟フォルダの正常なファイルは
+    /// 引き続き列挙する。
     /// </summary>
     public static IEnumerable<(string AbsolutePath, string ZipEntry)> EnumerateExistingFiles(
         BackupCategoryDefinition category, Action<string>? onWarning = null)
@@ -149,18 +159,7 @@ public static class PathCatalog
 
             var dirName = Path.GetFileName(source.AbsolutePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
-            List<string> files;
-            try
-            {
-                files = Directory.EnumerateFiles(source.AbsolutePath, "*", SearchOption.AllDirectories).ToList();
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                onWarning?.Invoke($"スキップ(フォルダ読み取り不可): {source.AbsolutePath} ({ex.Message})");
-                continue;
-            }
-
-            foreach (var file in files)
+            foreach (var file in EnumerateFilesResilient(source.AbsolutePath, onWarning))
             {
                 var relative = Path.GetRelativePath(source.AbsolutePath, file).Replace('\\', '/');
                 if (IsExcludedRelativePath(relative))
@@ -169,6 +168,54 @@ public static class PathCatalog
                 }
 
                 yield return (file, $"{category.ZipFolderName}/{dirName}/{relative}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Directory.EnumerateFiles(path, "*", AllDirectories)はサブフォルダ1つでも読み取り不可だと
+    /// 例外を送出しそれまで列挙できていたファイルごと失われるため、フォルダ単位で手動再帰し、
+    /// 権限エラー等が起きたサブフォルダだけをスキップして兄弟フォルダの列挙を継続する。
+    /// </summary>
+    private static IEnumerable<string> EnumerateFilesResilient(string rootPath, Action<string>? onWarning)
+    {
+        var pendingDirs = new Stack<string>();
+        pendingDirs.Push(rootPath);
+
+        while (pendingDirs.Count > 0)
+        {
+            var currentDir = pendingDirs.Pop();
+
+            string[] files;
+            try
+            {
+                files = Directory.GetFiles(currentDir);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                onWarning?.Invoke($"スキップ(フォルダ読み取り不可): {currentDir} ({ex.Message})");
+                continue;
+            }
+
+            foreach (var file in files)
+            {
+                yield return file;
+            }
+
+            string[] subDirs;
+            try
+            {
+                subDirs = Directory.GetDirectories(currentDir);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                onWarning?.Invoke($"スキップ(フォルダ読み取り不可): {currentDir} ({ex.Message})");
+                continue;
+            }
+
+            foreach (var subDir in subDirs)
+            {
+                pendingDirs.Push(subDir);
             }
         }
     }
@@ -191,13 +238,12 @@ public static class PathCatalog
             return false;
         }
 
-        var claudeAppData = Path.Combine(AppDataDir, "Claude") + Path.DirectorySeparatorChar;
-        var claudeHome = Path.Combine(UserProfileDir, ".claude") + Path.DirectorySeparatorChar;
-        var claudeJson = Path.Combine(UserProfileDir, ".claude.json");
+        var claudeAppData = ClaudeAppDataDir + Path.DirectorySeparatorChar;
+        var claudeHome = ClaudeHomeDir + Path.DirectorySeparatorChar;
 
         return fullPath.StartsWith(claudeAppData, StringComparison.OrdinalIgnoreCase)
             || fullPath.StartsWith(claudeHome, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(fullPath, claudeJson, StringComparison.OrdinalIgnoreCase);
+            || string.Equals(fullPath, ClaudeJsonPath, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

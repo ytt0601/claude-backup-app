@@ -8,11 +8,11 @@ public class ClaudeProcessService
     private const string ProcessName = "claude";
 
     /// <summary>
-    /// Claude Desktop本体(Electron製アプリ)の実行ファイルはFileVersionInfo上の製品名が"Claude"。
-    /// Claude Code CLI(ターミナルの claude コマンドや、Desktop内蔵の claude-code バイナリ)は
-    /// 同じファイル名 "claude.exe" だが製品名は"Claude Code"であり、これで区別できる。
+    /// Claude Code CLI(ターミナルの claude コマンドや、Desktop内蔵の claude-code バイナリ)の
+    /// 実行ファイルはFileVersionInfo上の製品名が"Claude Code"。Claude Desktop本体(Electron製)は
+    /// 同じファイル名 "claude.exe" だが製品名が異なるため、これで区別する。
     /// </summary>
-    private const string DesktopProductName = "Claude";
+    private const string CliProductName = "Claude Code";
 
     /// <summary>
     /// Claude Desktop(Electron製、複数プロセスがすべて "claude.exe" として起動する)が
@@ -40,7 +40,9 @@ public class ClaudeProcessService
     {
         try
         {
-            return string.Equals(process.MainModule?.FileVersionInfo.ProductName, DesktopProductName, StringComparison.Ordinal);
+            // "Claude Code" だと積極的に判定できたものだけを除外し、それ以外
+            // (将来Desktop側の製品名表記が変わった場合を含む)は安全側に倒してDesktopとして扱う。
+            return !string.Equals(process.MainModule?.FileVersionInfo.ProductName, CliProductName, StringComparison.Ordinal);
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or NotSupportedException)
         {

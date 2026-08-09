@@ -64,7 +64,11 @@ public partial class RestoreViewModel : ObservableObject
             Categories.Clear();
             foreach (var category in _manifest.Categories)
             {
-                Categories.Add(new CategoryOptionViewModel(category.Id, category.DisplayName, isChecked: !category.ContainsSensitiveData, category.ContainsSensitiveData));
+                Categories.Add(new CategoryOptionViewModel(
+                    category.Id,
+                    category.DisplayName,
+                    isChecked: category.DefaultEnabled ?? !category.ContainsSensitiveData,
+                    category.ContainsSensitiveData));
             }
 
             ManifestSummary =

@@ -11,8 +11,15 @@ public class RestoreService
     /// バックアップZIP内の manifest.json を読み込む。復元処理はこのmanifestのみに依存し、
     /// PathCatalog(現在のアプリのパス定義)には依存しない。将来パス定義が変わっても
     /// 過去のバックアップを元の場所へ正しく復元できるようにするため。
+    /// ZIPの展開・解析はいずれも同期APIのため、UIスレッドをブロックしないよう
+    /// 全体をバックグラウンドスレッドで実行する。
     /// </summary>
-    public async Task<BackupManifest> ReadManifestAsync(string zipPath, CancellationToken cancellationToken)
+    public Task<BackupManifest> ReadManifestAsync(string zipPath, CancellationToken cancellationToken)
+    {
+        return Task.Run(() => ReadManifestCoreAsync(zipPath, cancellationToken), cancellationToken);
+    }
+
+    private static async Task<BackupManifest> ReadManifestCoreAsync(string zipPath, CancellationToken cancellationToken)
     {
         using var archive = ZipFile.OpenRead(zipPath);
         var entry = archive.GetEntry("manifest.json")
@@ -23,6 +30,13 @@ public class RestoreService
         if (manifest is null || manifest.Categories is null)
         {
             throw new InvalidDataException("manifest.jsonの内容が不正です。有効なバックアップファイルではない可能性があります。");
+        }
+
+        // 第三者由来のZIPで "Files" が null に細工されている可能性があるため、
+        // 復元処理側で null 前提の操作(SelectMany等)が未処理例外を起こさないよう正規化する。
+        foreach (var category in manifest.Categories)
+        {
+            category.Files ??= new List<BackupManifestFile>();
         }
 
         return manifest;
@@ -62,6 +76,15 @@ public class RestoreService
         using var logger = new OperationLogger("Restore");
         using var archive = ZipFile.OpenRead(zipPath);
 
+        // archive.GetEntry(string) はエントリ数分の線形探索になるため、ファイル数が多いリストアで
+        // O(n^2) にならないよう、事前に名前引きの辞書を作っておく。
+        // (同名エントリが複数ある場合は GetEntry と同じく「後に見つかったもの」を優先する。)
+        var entriesByName = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
+        foreach (var e in archive.Entries)
+        {
+            entriesByName[e.FullName] = e;
+        }
+
         var files = manifest.Categories
             .Where(c => selectedCategoryIds.Contains(c.Id))
             .SelectMany(c => c.Files)
@@ -89,8 +112,7 @@ public class RestoreService
                         continue;
                     }
 
-                    var entry = archive.GetEntry(file.ZipEntry);
-                    if (entry is null)
+                    if (string.IsNullOrEmpty(file.ZipEntry) || !entriesByName.TryGetValue(file.ZipEntry, out var entry))
                     {
                         logger.Report(progress, index + 1, total, destination, LogLevel.Warning,
                             $"ZIP内に見つかりません: {file.ZipEntry}");
@@ -108,9 +130,32 @@ public class RestoreService
                     tempPath = destination + $".restoring_{Guid.NewGuid():N}.tmp";
                     entry.ExtractToFile(tempPath, overwrite: true);
 
-                    EvacuateIfExists(destination, evacuationRoot);
-                    File.Move(tempPath, destination, overwrite: true);
-                    tempPath = null;
+                    var evacuatedPath = EvacuateIfExists(destination, evacuationRoot);
+
+                    try
+                    {
+                        File.Move(tempPath, destination, overwrite: true);
+                        tempPath = null;
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        // 最終移動が失敗した場合、直前に退避しておいた元ファイルを復元先へ戻し、
+                        // 復元先に新旧どちらのファイルも無い状態を避ける。
+                        if (evacuatedPath is not null)
+                        {
+                            try
+                            {
+                                File.Move(evacuatedPath, destination, overwrite: true);
+                            }
+                            catch (Exception ex2) when (ex2 is IOException or UnauthorizedAccessException)
+                            {
+                                logger.Report(progress, index + 1, total, destination, LogLevel.Error,
+                                    $"復元先の復旧に失敗しました。元ファイルは退避フォルダに残っています: {evacuatedPath} ({ex2.Message})");
+                            }
+                        }
+
+                        throw;
+                    }
 
                     logger.Report(progress, index + 1, total, destination, LogLevel.Info, $"復元: {destination}");
                 }
@@ -153,11 +198,18 @@ public class RestoreService
         return evacuationRoot;
     }
 
-    private static void EvacuateIfExists(string destinationPath, string evacuationRoot)
+    /// <summary>
+    /// 既存ファイルを退避フォルダへ移動する。退避先のパスは <paramref name="destinationPath"/> から
+    /// 決定的に計算されるが、同一リストア内で複数のファイルが同じ復元先を指す(信用できない
+    /// manifest.jsonによる細工を含む)場合に備え、既に同名の退避先が存在するときは連番を付けて
+    /// 一意な退避先を確保する(先に退避したファイルを上書きして失わないようにするため)。
+    /// </summary>
+    /// <returns>実際に退避したファイルのパス。退避対象が存在しなかった場合はnull。</returns>
+    private static string? EvacuateIfExists(string destinationPath, string evacuationRoot)
     {
         if (!File.Exists(destinationPath))
         {
-            return;
+            return null;
         }
 
         var fullPath = Path.GetFullPath(destinationPath);
@@ -165,13 +217,35 @@ public class RestoreService
             ? fullPath[3..] // "C:\" を除去
             : fullPath.TrimStart(Path.DirectorySeparatorChar);
 
-        var evacuationPath = Path.Combine(evacuationRoot, pathWithoutRoot);
+        var evacuationPath = EnsureUniqueEvacuationPath(Path.Combine(evacuationRoot, pathWithoutRoot));
         var evacuationDir = Path.GetDirectoryName(evacuationPath);
         if (!string.IsNullOrEmpty(evacuationDir))
         {
             Directory.CreateDirectory(evacuationDir);
         }
 
-        File.Move(destinationPath, evacuationPath, overwrite: true);
+        File.Move(destinationPath, evacuationPath);
+        return evacuationPath;
+    }
+
+    private static string EnsureUniqueEvacuationPath(string evacuationPath)
+    {
+        if (!File.Exists(evacuationPath) && !Directory.Exists(evacuationPath))
+        {
+            return evacuationPath;
+        }
+
+        var dir = Path.GetDirectoryName(evacuationPath) ?? string.Empty;
+        var fileName = Path.GetFileNameWithoutExtension(evacuationPath);
+        var ext = Path.GetExtension(evacuationPath);
+
+        for (var i = 1; ; i++)
+        {
+            var candidate = Path.Combine(dir, $"{fileName}_{i}{ext}");
+            if (!File.Exists(candidate) && !Directory.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
     }
 }
