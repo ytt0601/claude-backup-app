@@ -88,6 +88,8 @@ public class RestoreService
         // manifest.json は信用できないため、複数のファイルが同じ復元先を指すよう細工されている
         // 可能性がある。退避先の一意化だけでは復元先本体への上書きは防げないため、同一リストア内で
         // 既に復元済みの復元先は無警告で上書きせず、最初の1件のみを復元してスキップする。
+        // (実際に File.Move が成功した後にのみ追加すること。失敗した1件目のために復元先を
+        // 「消費」してしまうと、復元できたはずの2件目まで巻き添えでスキップされてしまう。)
         var restoredDestinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var files = manifest.Categories
@@ -117,7 +119,8 @@ public class RestoreService
                         continue;
                     }
 
-                    if (!restoredDestinations.Add(Path.GetFullPath(destination)))
+                    var fullDestination = Path.GetFullPath(destination);
+                    if (restoredDestinations.Contains(fullDestination))
                     {
                         logger.Report(progress, index + 1, total, destination, LogLevel.Warning,
                             $"スキップ(復元先が重複): {destination} は同一リストア内の別のファイルと復元先が重複しているため、最初の1件のみ復元しました。");
@@ -148,6 +151,7 @@ public class RestoreService
                     {
                         File.Move(tempPath, destination, overwrite: true);
                         tempPath = null;
+                        restoredDestinations.Add(fullDestination);
                     }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
                     {
