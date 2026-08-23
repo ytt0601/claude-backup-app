@@ -34,10 +34,14 @@ MVVM構成(CommunityToolkit.Mvvm使用)。`MainViewModel` が `BackupViewModel` 
 **新しいバックアップ対象を追加する際の分類基準**:
 - `ContainsSensitiveData` はファイルがトークン・APIキー・認証情報を含み得るか(環境変数経由など間接的な場合も含む)で判定する。判断に迷う場合は `true` 側に倒す。
 - 既存カテゴリに含めるか新カテゴリを作るかは、そのファイルの**生成元アプリケーション**(Desktop本体 / Claude Code CLI / Cowork)を基準に決める。`%APPDATA%\Claude` 配下かどうかといった**物理的なパスの近さだけでは判断しない**こと(例: `%LOCALAPPDATA%\Claude\config.json` はパス上は `desktop-settings` に近く見えても、Claude Codeが書き込むファイルなら `code-settings` に分類する)。
+- `ContainsSensitiveData` を `true` から `false` へ**緩和してよいのは、対象ファイルの実データを確認して機微情報を含まないと確証を得た場合だけ**。「中身を確認できないので安全側に倒して `true`」という経緯で付いた値を、後から推測だけで `false` に戻さないこと(緩和は一方向)。
+
+**コードとドキュメントの同期**: `PathCatalog` のカテゴリ定義と除外対象は `要件定義書.md` 4章を実装したもの。どちらか一方だけを変えないこと。カテゴリを追加・変更したら `要件定義書.md` の**3章**(バックアップ画面のカテゴリ件数の表記)と**4章の対象パス表**を、除外対象を追加したら**4章「除外対象」の一覧**を、いずれも同じコミットで更新する。これは「余裕があれば」の推奨ではなく、カテゴリ定義の変更に必ず含める作業。**この CLAUDE.md 自身**も同期対象で、下の「バックアップ/リストアの対称性」がカテゴリIDを列挙しているため、カテゴリを増減したらここも直す。
 
 **復元先パスの解決とポータビリティ**: `manifest.json` の各ファイルには絶対パス(`Destination`)に加え、`RootKind`(`"AppData"` または `"UserProfile"`)+ `RelativePath` が記録される(`PathCatalog.ToPortableRoot`)。リストア時は `PathCatalog.ResolvePortablePath` で現在の環境の `%APPDATA%` / `%USERPROFILE%` を基準に再解決し、別マシン・別ユーザーアカウントへのリストアに対応する。`RootKind`/`RelativePath` が無い旧形式バックアップでは `Destination` にフォールバックする。
 
-- **特殊フォルダのネストに注意**: `%LOCALAPPDATA%` や `%APPDATA%`(Roaming)は物理的に `%USERPROFILE%` 配下にネストしている。新しい `RootKind` を追加する場合は、`ToPortableRoot`/`IsAllowedRestoreDestination` のprefix一致チェックにおいて、より深い(具体的な)パスを持つルートを先にチェックする実装にすること。順序を誤ると、狭いルート配下のファイルが広いルートの `RootKind` として誤分類される(例: `UserProfile` チェックを先に行うと `%LOCALAPPDATA%\...` が `RootKind="UserProfile"` と誤判定される)。
+- **新しい `RootKind` を足すべきかの判断**: 「既存ルートのprefix一致で結果的に解決できてしまうか」ではなく、**そのルートが環境ごとに独立して移動しうるか**で決める。例えば `%LOCALAPPDATA%` 配下のファイルは `UserProfile` ルートでも一応解決できるが、それは `%LOCALAPPDATA%` が `%USERPROFILE%\AppData\Local` にあるという既定構成に依存した偶然であり、フォルダリダイレクトされた環境では壊れる。新しい物理ルート配下を対象にするなら `RootKind` を足すこと。
+- **特殊フォルダのネストに注意**: `%LOCALAPPDATA%` や `%APPDATA%`(Roaming)は物理的に `%USERPROFILE%` 配下にネストしている。`ToPortableRoot` のように**どのルートに属するかを1つ選ぶ**処理では、より深い(具体的な)パスを持つルートを先にチェックすること。順序を誤ると、狭いルート配下のファイルが広いルートの `RootKind` として誤分類される(例: `UserProfile` チェックを先に行うと `%LOCALAPPDATA%\...` が `RootKind="UserProfile"` と誤判定される)。一方 `IsAllowedRestoreDestination` は複数prefixのOR判定なので順序は結果に影響しない — こちらで注意すべきは順序ではなく**新しいルートの追加漏れ**(漏らすと復元先が黙って拒否され、そのファイルだけ復元されない)。`ResolvePortablePath` の `rootKind` switch への追加も同時に必要。
 
 **セキュリティ境界**: `manifest.json` は第三者から渡されたZIPの中身である可能性があり信用できない。そのため `RestoreService` は書き込み前に必ず `PathCatalog.IsAllowedRestoreDestination` で復元先が正規のClaude関連パス(`%APPDATA%\Claude`, `%USERPROFILE%\.claude`, `%USERPROFILE%\.claude.json`)配下であることを検証する(パストラバーサル対策)。新しい復元先パスを扱うコードを書く場合は必ずこの検証を通すこと。
 
@@ -47,7 +51,7 @@ MVVM構成(CommunityToolkit.Mvvm使用)。`MainViewModel` が `BackupViewModel` 
 
 **進捗・ログ**: `OperationLogger` が `IProgress<OperationProgress>` へのUI通知と `%APPDATA%\ClaudeBackupApp\Logs\` へのログファイル出力を一箇所に集約する。`BackupService` / `RestoreService` の重複ロジックをまとめたものなので、進捗報告を追加する場合はここを経由させる。ログ書き込みは `AutoFlush = true`(1件ごとに同期フラッシュ)で、クラッシュ時にもログを失わないための意図的な設計。大量ファイル処理時のパフォーマンス調査をする際は、退避処理などのファイル操作そのものより、まずここを疑うこと(こちらは「リストアの安全な差し替え手順」とは異なり変更禁止ではないので、`BackupService` との共有箇所であることに注意すれば見直して構わない)。
 
-**除外対象の二重防御**: `PathCatalog.ExcludedDirectoryNames` はキャッシュ・診断ログ等(要件定義書4章)を列挙する。現状はSourcesの対象パス外にあるため実害はないが、将来Claude側の内部構成が変わりこれらが対象パス配下にネストされても黙って取り込まれないようにするための保険。
+**除外対象の二重防御**: `PathCatalog` 内の `ExcludedDirectoryNames`(private)はキャッシュ・診断ログ等(要件定義書4章)を列挙する。現状はSourcesの対象パス外にあるため実害はないが、将来Claude側の内部構成が変わりこれらが対象パス配下にネストされても黙って取り込まれないようにするための保険。
 
 ## その他の制約
 

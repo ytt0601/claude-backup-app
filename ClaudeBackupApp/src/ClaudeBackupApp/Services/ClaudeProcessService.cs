@@ -11,6 +11,14 @@ public class ClaudeProcessService
     /// Claude Code CLI(ターミナルの claude コマンドや、Desktop内蔵の claude-code バイナリ)の
     /// 実行ファイルはFileVersionInfo上の製品名が"Claude Code"。Claude Desktop本体(Electron製)は
     /// 同じファイル名 "claude.exe" だが製品名が異なるため、これで区別する。
+    ///
+    /// 実測値(2026-08-24 / Desktop 1.34493.1.0 + CLI 2.1.237):
+    ///   %USERPROFILE%\.local\bin\claude.exe → ProductName "Claude Code"(bunビルド)
+    ///   %APPDATA%\Claude\claude-code\&lt;ver&gt;\claude.exe → ProductName "Claude Code"
+    ///   Program Files\WindowsApps\Claude_&lt;ver&gt;\app\claude.exe → ProductName "Claude"
+    /// bunでコンパイルされた単一実行ファイルでもバージョンリソースは省略されておらず、
+    /// ProductNameがnullになりCLIをDesktopと誤カウントする経路は現状存在しない。
+    /// 判定条件を触る前にこの実測をやり直すこと(ProductNameは外部由来の値であり将来変わりうる)。
     /// </summary>
     private const string CliProductName = "Claude Code";
 

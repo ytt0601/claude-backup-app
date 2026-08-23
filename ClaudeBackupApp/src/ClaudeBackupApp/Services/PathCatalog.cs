@@ -108,7 +108,8 @@ public static class PathCatalog
         // %APPDATA%\Claude\ 配下
         "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
         "IndexedDB", "Local Storage", "Session Storage", "Shared Dictionary", "WebStorage",
-        "Network", "Crashpad", "Partitions", "DIPS", "SharedStorage", "blob_storage", "claude-code",
+        "Network", "Crashpad", "Partitions", "DIPS", "DIPS-wal", "SharedStorage", "SharedStorage-wal",
+        "blob_storage", "claude-code",
         // %USERPROFILE%\.claude\ 配下
         "cache", "chrome", "downloads", "paste-cache", "backups", "session-env",
         "debug", "telemetry", "shell-snapshots",

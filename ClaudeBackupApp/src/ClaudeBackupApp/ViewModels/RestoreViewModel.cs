@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Windows;
 using ClaudeBackupApp.Models;
 using ClaudeBackupApp.Services;
@@ -147,25 +148,45 @@ public partial class RestoreViewModel : ObservableObject
             }
         });
 
+        // 退避先はRestoreAsyncの戻り値でも得られるが、それは正常終了時のみ。中断・エラーで終わった場合こそ
+        // 「退避された元ファイルがどこにあるか」の案内が要るため、開始時のコールバックでも受け取っておく。
+        string? evacuationRoot = null;
+        void CaptureEvacuationRoot(string root) => evacuationRoot = root;
+
         try
         {
             StatusText = "リストア中...";
-            var evacuationRoot = await _restoreService.RestoreAsync(BackupFilePath, _manifest, selectedIds, progress, _cts.Token);
+            evacuationRoot = await _restoreService.RestoreAsync(
+                BackupFilePath, _manifest, selectedIds, progress, CaptureEvacuationRoot, _cts.Token);
             StatusText = $"完了(退避先: {evacuationRoot})";
         }
         catch (OperationCanceledException)
         {
-            StatusText = "キャンセルしました。";
+            StatusText = AppendEvacuationHint("キャンセルしました。", evacuationRoot);
         }
         catch (Exception ex)
         {
-            StatusText = $"エラー: {ex.Message}";
+            StatusText = AppendEvacuationHint($"エラー: {ex.Message}", evacuationRoot);
             LogLines.Add($"[Error] {ex.Message}");
         }
         finally
         {
             IsBusy = false;
         }
+    }
+
+    /// <summary>
+    /// 中断・エラー時のステータス文に退避先フォルダの案内を付ける。実際に退避が発生した場合のみ付けるため、
+    /// フォルダの実在を確認する(1件も退避せずに終わったときに存在しないパスを案内すると、かえって混乱させるため)。
+    /// </summary>
+    private static string AppendEvacuationHint(string message, string? evacuationRoot)
+    {
+        if (string.IsNullOrEmpty(evacuationRoot) || !Directory.Exists(evacuationRoot))
+        {
+            return message;
+        }
+
+        return $"{message} 退避済みの元ファイルは次の場所にあります: {evacuationRoot}";
     }
 
     private bool CanRunRestore() => !IsBusy && IsManifestLoaded;

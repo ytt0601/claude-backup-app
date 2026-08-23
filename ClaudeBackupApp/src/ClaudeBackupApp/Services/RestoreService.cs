@@ -51,15 +51,23 @@ public class RestoreService
     /// %APPDATA%・%USERPROFILE%を基準に復元先を再解決する(別マシン/別ユーザーアカウントへの復元に対応)。
     /// ファイルI/Oはすべて同期APIのため、UIスレッドをブロックしないよう全体をバックグラウンドスレッドで実行する。
     /// </summary>
+    /// <param name="onEvacuationRootDetermined">
+    /// 退避先フォルダが決まった直後(実際の復元を始める前)に呼ばれる。戻り値は正常終了時にしか
+    /// 呼び出し元へ渡らないため、キャンセル・例外で終わった場合でも「退避した元ファイルがどこにあるか」を
+    /// 案内できるようにするためのもの。バックグラウンドスレッドから呼ばれる点に注意。
+    /// </param>
     /// <returns>今回の退避先フォルダ(何も退避しなかった場合でもパスは返す)</returns>
     public Task<string> RestoreAsync(
         string zipPath,
         BackupManifest manifest,
         IReadOnlyList<string> selectedCategoryIds,
         IProgress<OperationProgress>? progress,
+        Action<string>? onEvacuationRootDetermined,
         CancellationToken cancellationToken)
     {
-        return Task.Run(() => RestoreCore(zipPath, manifest, selectedCategoryIds, progress, cancellationToken), cancellationToken);
+        return Task.Run(
+            () => RestoreCore(zipPath, manifest, selectedCategoryIds, progress, onEvacuationRootDetermined, cancellationToken),
+            cancellationToken);
     }
 
     private static string RestoreCore(
@@ -67,11 +75,15 @@ public class RestoreService
         BackupManifest manifest,
         IReadOnlyList<string> selectedCategoryIds,
         IProgress<OperationProgress>? progress,
+        Action<string>? onEvacuationRootDetermined,
         CancellationToken cancellationToken)
     {
         var evacuationRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ClaudeBackupApp", "PreRestoreEvacuation", DateTimeOffset.Now.ToString("yyyyMMdd_HHmmss"));
+
+        // ZIPを開く前に通知する。ここから先で例外が出ても呼び出し元が退避先を案内できるようにするため。
+        onEvacuationRootDetermined?.Invoke(evacuationRoot);
 
         using var logger = new OperationLogger("Restore");
         using var archive = ZipFile.OpenRead(zipPath);
