@@ -21,6 +21,15 @@ public class RestoreService
     private const int MaxRestoreFileCount = 100_000;
 
     /// <summary>
+    /// manifest.json 自体の展開バイト数の上限。件数上限(<see cref="MaxRestoreFileCount"/>)は
+    /// JSONを最後まで読み終えないと判定できないため、それだけではmanifestをzip bomb化されたときに
+    /// 件数チェックへ到達する前にメモリを食い潰される。読み込み段階でバイト数を先に打ち切ること。
+    /// 値は「MaxRestoreFileCount件 × 1件あたりのJSONサイズ(長いパス2本を含めても1KB弱)」に
+    /// 余裕を見たもので、正当なバックアップのmanifestがこの上限に触れることはない。
+    /// </summary>
+    private const long MaxManifestBytes = 128L * 1024 * 1024;
+
+    /// <summary>
     /// 退避フォルダ(PreRestoreEvacuation)の保持世代数。退避された元ファイルには認証情報が
     /// 平文で含まれうるため、無期限に溜め続けない。直近数回分は復旧手段として残す。
     /// </summary>
@@ -44,8 +53,18 @@ public class RestoreService
         var entry = archive.GetEntry("manifest.json")
             ?? throw new InvalidDataException("manifest.jsonが見つかりません。有効なバックアップファイルではない可能性があります。");
 
+        // JsonSerializerへ直接エントリのストリームを渡すと、manifest.json 自体が
+        // zip bomb化されていた場合に上限なくメモリへ展開されてしまう。先にバイト数を
+        // 打ち切りながら読み込み、その結果に対してのみJSONを解析する。
         await using var stream = entry.Open();
-        var manifest = await JsonSerializer.DeserializeAsync<BackupManifest>(stream, cancellationToken: cancellationToken);
+        using var buffered = await ReadWithLimitAsync(stream, MaxManifestBytes, cancellationToken);
+
+        // 逆シリアライズ「前」に件数を確かめる。バイト上限だけでは、1バイトあたりの
+        // オブジェクト数までは縛れない(128MBのJSONからは数百万件のエントリを作れる)ため、
+        // オブジェクト数を数えてから解析しないと MaxRestoreFileCount がメモリの上限として働かない。
+        EnsureObjectCountWithinLimit(buffered.GetBuffer().AsSpan(0, (int)buffered.Length));
+
+        var manifest = await JsonSerializer.DeserializeAsync<BackupManifest>(buffered, cancellationToken: cancellationToken);
         if (manifest is null || manifest.Categories is null)
         {
             throw new InvalidDataException("manifest.jsonの内容が不正です。有効なバックアップファイルではない可能性があります。");
@@ -60,7 +79,8 @@ public class RestoreService
             declaredFileCount += category.Files.Count;
         }
 
-        // 件数を膨らませたmanifestでメモリ・処理時間を食い潰されないよう、読み込み段階で打ち切る。
+        // 上のオブジェクト数チェックを通っていれば必ず上限内に収まるが、
+        // 「復元対象の件数」という本来の意味での上限をここでも明示しておく。
         if (declaredFileCount > MaxRestoreFileCount)
         {
             throw new InvalidDataException(
@@ -69,6 +89,78 @@ public class RestoreService
         }
 
         return manifest;
+    }
+
+    /// <summary>
+    /// JSON中のオブジェクト数が上限を超えていないかを、逆シリアライズせずに数えて確かめる。
+    /// Utf8JsonReader はトークンを走査するだけでオブジェクトを作らないため、
+    /// ここで打ち切れば「解析中に大量のオブジェクトが確保される」経路を塞げる。
+    /// ルート・カテゴリのぶんは <see cref="MaxRestoreFileCount"/> に対する余裕として上乗せする。
+    /// </summary>
+    private static void EnsureObjectCountWithinLimit(ReadOnlySpan<byte> utf8Json)
+    {
+        const int structuralAllowance = 1024;
+        var limit = MaxRestoreFileCount + structuralAllowance;
+
+        var reader = new Utf8JsonReader(utf8Json);
+        var objectCount = 0;
+        try
+        {
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.StartObject)
+                {
+                    continue;
+                }
+
+                if (++objectCount > limit)
+                {
+                    throw new InvalidDataException(
+                        $"manifest.jsonの要素数が上限({MaxRestoreFileCount:N0}件)を超えています。" +
+                        "有効なバックアップファイルではない可能性があります。");
+                }
+            }
+        }
+        catch (JsonException ex)
+        {
+            // ここで構文エラーが分かった場合も、後続の逆シリアライズと同じ扱いにする
+            throw new InvalidDataException(
+                $"manifest.jsonの内容が不正です。有効なバックアップファイルではない可能性があります。({ex.Message})", ex);
+        }
+    }
+
+    /// <summary>
+    /// ストリームを上限バイト数までメモリへ読み込む。上限を超えた時点で読み込みを打ち切り、
+    /// 例外を送出する(信用できないZIPのエントリを無制限に展開しないため)。
+    /// </summary>
+    private static async Task<MemoryStream> ReadWithLimitAsync(
+        Stream source, long limit, CancellationToken cancellationToken)
+    {
+        var buffered = new MemoryStream();
+        try
+        {
+            var chunk = new byte[81920];
+            int read;
+            while ((read = await source.ReadAsync(chunk, cancellationToken)) > 0)
+            {
+                if (buffered.Length + read > limit)
+                {
+                    throw new InvalidDataException(
+                        $"manifest.jsonのサイズが上限({limit:N0} バイト)を超えています。" +
+                        "有効なバックアップファイルではない可能性があります。");
+                }
+
+                buffered.Write(chunk, 0, read);
+            }
+        }
+        catch
+        {
+            buffered.Dispose();
+            throw;
+        }
+
+        buffered.Position = 0;
+        return buffered;
     }
 
     /// <summary>
@@ -144,7 +236,7 @@ public class RestoreService
         // (静的キャッシュにすると検証と書き込みの間隔が開きTOCTOUが広がるので、実行ごとに作る。)
         var linkResolutionCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        var extractedTotalBytes = 0L;
+        var extractionBudget = new ExtractionBudget(MaxTotalBytes);
 
         var files = manifest.Categories
             .Where(c => selectedCategoryIds.Contains(c.Id))
@@ -197,9 +289,7 @@ public class RestoreService
                     // 展開はまず一時ファイルへ行い、成功してから既存ファイルを退避して差し替える。
                     // こうすることでZIPエントリが壊れている等で展開が失敗しても、既存の元ファイルを失わない。
                     tempPath = destination + $".restoring_{Guid.NewGuid():N}.tmp";
-                    var extractedBytes = ExtractWithLimit(
-                        entry, tempPath, MaxTotalBytes - extractedTotalBytes, cancellationToken);
-                    extractedTotalBytes += extractedBytes;
+                    ExtractWithLimit(entry, tempPath, extractionBudget, cancellationToken);
 
                     var evacuatedPath = EvacuateIfExists(destination, evacuationRoot);
                     if (evacuatedPath is not null)
@@ -288,15 +378,32 @@ public class RestoreService
     }
 
     /// <summary>
-    /// ZIPエントリを上限バイト数まで一時ファイルへ展開し、書き出したバイト数を返す。
+    /// リストア1回で展開してよい合計バイト数の残量。
+    /// エントリ単位ではなくリストア全体で共有し、<b>展開に失敗したエントリの分も必ず消費させる</b>。
+    /// 成功したエントリの分だけを差し引く実装にすると、上限超過でわざと失敗し続けるエントリを
+    /// 並べたZIPが合計上限を素通りしてしまい(失敗分は何度でもディスクへ書けてしまう)、
+    /// 合計上限が意味を成さなくなる。
+    /// </summary>
+    private sealed class ExtractionBudget
+    {
+        public ExtractionBudget(long totalBytes) => Remaining = totalBytes;
+
+        /// <summary>残量。使い切ると0未満にもなりうる(呼び出し側で下限を取る)。</summary>
+        public long Remaining { get; private set; }
+
+        public void Consume(long bytes) => Remaining -= bytes;
+    }
+
+    /// <summary>
+    /// ZIPエントリを上限バイト数まで一時ファイルへ展開する。
     /// ZipArchiveEntry.Length(ヘッダ上の非圧縮サイズ)は信用できないため、宣言値ではなく
-    /// 実際に書き出した量で打ち切る(zip bomb対策)。
+    /// 実際に読み出した量で打ち切る(zip bomb対策)。
     /// ExtractToFileと違い最終更新日時が引き継がれないので、明示的に復元する。
     /// </summary>
-    private static long ExtractWithLimit(
-        ZipArchiveEntry entry, string tempPath, long remainingTotalBudget, CancellationToken cancellationToken)
+    private static void ExtractWithLimit(
+        ZipArchiveEntry entry, string tempPath, ExtractionBudget budget, CancellationToken cancellationToken)
     {
-        var limit = Math.Min(MaxEntryBytes, Math.Max(remainingTotalBudget, 0));
+        var limit = Math.Min(MaxEntryBytes, Math.Max(budget.Remaining, 0));
 
         long written = 0;
         using (var source = entry.Open())
@@ -308,7 +415,11 @@ public class RestoreService
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                // 読み出した時点で合計予算から差し引く。このあと上限超過で打ち切っても
+                // 消費済みとして残すため、失敗を繰り返して合計上限を回避できない。
                 written += read;
+                budget.Consume(read);
+
                 if (written > limit)
                 {
                     throw new InvalidDataException(
@@ -328,8 +439,6 @@ public class RestoreService
         {
             // ZIP側の日時が不正(範囲外)でも復元自体は続行する
         }
-
-        return written;
     }
 
     /// <summary>
@@ -363,7 +472,7 @@ public class RestoreService
             {
                 try
                 {
-                    Directory.Delete(stale, recursive: true);
+                    DeleteDirectoryTree(stale);
                     logger.Report(progress, processedCount, total, stale, LogLevel.Info,
                         $"古い退避フォルダを削除しました(保持{EvacuationGenerationsToKeep}世代): {stale}");
                 }
@@ -380,6 +489,50 @@ public class RestoreService
             logger.Report(progress, processedCount, total, string.Empty, LogLevel.Warning,
                 $"退避フォルダの世代整理に失敗しました: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// フォルダを再帰的に削除する。<b>リパースポイント(シンボリックリンク・ジャンクション)は
+    /// 中へ辿らず、リンク自体を外す</b>。
+    ///
+    /// Directory.Delete(recursive: true) を直接使わないのは、退避フォルダが置かれる
+    /// %LOCALAPPDATA% が同一ユーザーの別プロセスから書き込み可能だからである。
+    /// そこにジャンクションを1つ置かれると Directory.Delete は UnauthorizedAccessException を
+    /// 投げて世代整理が恒久的に失敗し、平文の認証情報を含む退避データが消えずに残り続ける
+    /// (削除自体はリンク先を辿らないためデータ破壊にはならないが、保持世代数の制限が効かなくなる)。
+    /// </summary>
+    private static void DeleteDirectoryTree(string path)
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(path))
+        {
+            var attributes = File.GetAttributes(entry);
+
+            if (attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                // リンクの実体(リンク先)には触らず、リンクだけを外す。
+                if (attributes.HasFlag(FileAttributes.Directory))
+                {
+                    Directory.Delete(entry, recursive: false);
+                }
+                else
+                {
+                    File.Delete(entry);
+                }
+
+                continue;
+            }
+
+            if (attributes.HasFlag(FileAttributes.Directory))
+            {
+                DeleteDirectoryTree(entry);
+            }
+            else
+            {
+                File.Delete(entry);
+            }
+        }
+
+        Directory.Delete(path, recursive: false);
     }
 
     /// <summary>

@@ -1,5 +1,4 @@
 using System.IO;
-using System.Text;
 using ClaudeBackupApp.Models;
 
 namespace ClaudeBackupApp.Services;
@@ -40,7 +39,7 @@ public sealed class OperationLogger : IDisposable
         // messageにはmanifest.json由来の文字列(復元先パス・カテゴリ表示名)が埋め込まれる。
         // manifestは信用できないため、改行を含む値をそのまま書くと「1行1エントリ」のログに
         // 偽の完了行を捏造できてしまう。UI(ListBox)の表示崩れも防ぐため通知側にも適用する。
-        message = SanitizeForLog(message);
+        message = UntrustedText.Escape(message);
 
         progress?.Report(new OperationProgress
         {
@@ -58,57 +57,6 @@ public sealed class OperationLogger : IDisposable
         {
             // ログファイルへの書き込み失敗は処理継続を優先し無視する
         }
-    }
-
-    /// <summary>
-    /// ログ1件が1行に収まるよう、改行・制御文字をエスケープ表記へ置き換える。
-    /// 元の文字が何であったかは残す(削除ではなく可視化する)ため、調査時の情報は失わない。
-    /// </summary>
-    private static string SanitizeForLog(string message)
-    {
-        var needsEscape = false;
-        foreach (var ch in message)
-        {
-            if (char.IsControl(ch))
-            {
-                needsEscape = true;
-                break;
-            }
-        }
-
-        if (!needsEscape)
-        {
-            return message;
-        }
-
-        var builder = new StringBuilder(message.Length + 16);
-        foreach (var ch in message)
-        {
-            switch (ch)
-            {
-                case '\r':
-                    builder.Append("\\r");
-                    break;
-                case '\n':
-                    builder.Append("\\n");
-                    break;
-                case '\t':
-                    builder.Append("\\t");
-                    break;
-                default:
-                    if (char.IsControl(ch))
-                    {
-                        builder.Append("\\u").Append(((int)ch).ToString("x4"));
-                    }
-                    else
-                    {
-                        builder.Append(ch);
-                    }
-                    break;
-            }
-        }
-
-        return builder.ToString();
     }
 
     public void Dispose()

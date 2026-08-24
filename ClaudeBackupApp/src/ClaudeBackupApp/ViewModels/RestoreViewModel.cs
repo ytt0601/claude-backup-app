@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text;
 using System.Windows;
 using ClaudeBackupApp.Models;
 using ClaudeBackupApp.Services;
@@ -10,6 +11,13 @@ namespace ClaudeBackupApp.ViewModels;
 
 public partial class RestoreViewModel : ObservableObject
 {
+    /// <summary>
+    /// 警告ダイアログで分類ごとに表示する復元先パスの最大件数。
+    /// 全件は出せない(プラグイン等は正当なバックアップでも数百件になる)が、
+    /// 分類と件数は必ず出すため、省略によって危険な分類が見えなくなることはない。
+    /// </summary>
+    private const int MaxPathsShownPerKind = 5;
+
     private readonly RestoreService _restoreService = new();
     private readonly ClaudeProcessService _processService = new();
     private CancellationTokenSource? _cts;
@@ -61,20 +69,25 @@ public partial class RestoreViewModel : ObservableObject
             BackupFilePath = dialog.FileName;
             _manifest = await _restoreService.ReadManifestAsync(BackupFilePath, CancellationToken.None);
 
+            // 表示名・マシン名などもすべてmanifest由来＝攻撃者制御のため、画面へ出す前に
+            // 改行・制御文字をエスケープする。素通しすると、カテゴリ一覧やサマリに偽の行を
+            // 差し込んで「安全なバックアップである」かのように見せかけられる。
             Categories.Clear();
             foreach (var category in _manifest.Categories)
             {
                 Categories.Add(new CategoryOptionViewModel(
                     category.Id,
-                    category.DisplayName,
+                    UntrustedText.ForDisplay(category.DisplayName),
                     isChecked: category.DefaultEnabled ?? !category.ContainsSensitiveData,
                     category.ContainsSensitiveData));
             }
 
             ManifestSummary =
                 $"作成日時: {_manifest.CreatedAt.LocalDateTime:yyyy/MM/dd HH:mm:ss}\n" +
-                $"作成元PC: {_manifest.MachineName} ({_manifest.UserName})\n" +
-                $"含まれるカテゴリ: {string.Join(", ", _manifest.Categories.Select(c => c.DisplayName))}";
+                $"作成元PC: {UntrustedText.ForDisplay(_manifest.MachineName)} " +
+                $"({UntrustedText.ForDisplay(_manifest.UserName)})\n" +
+                "含まれるカテゴリ: " +
+                string.Join(", ", _manifest.Categories.Select(c => UntrustedText.ForDisplay(c.DisplayName)));
             IsManifestLoaded = Categories.Count > 0;
         }
         catch (Exception ex)
@@ -206,37 +219,61 @@ public partial class RestoreViewModel : ObservableObject
             return false;
         }
 
-        var riskyPaths = _manifest.Categories
+        // リンク解決は階層数ぶんファイルシステムを叩くため、この判定の間だけ使い回す。
+        var linkResolutionCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var byKind = _manifest.Categories
             .Where(c => selectedCategoryIds.Contains(c.Id))
             .SelectMany(c => c.Files)
             .Select(f => PathCatalog.ResolvePortablePath(f.RootKind, f.RelativePath) ?? f.Destination)
-            .Where(PathCatalog.IsCodeExecutionRisk)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+            .Select(p => (Path: p, Kind: PathCatalog.ClassifyRestoreRisk(p, linkResolutionCache)))
+            .Where(x => x.Kind != PathCatalog.RestoreRiskKind.None)
+            .GroupBy(x => x.Kind)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.Path).ToList());
 
-        if (riskyPaths.Count == 0)
+        if (byKind.Count == 0)
         {
             return true;
         }
 
-        const int maxShown = 10;
-        var shown = string.Join("\n", riskyPaths.Take(maxShown).Select(p => $"  ・{p}"));
-        if (riskyPaths.Count > maxShown)
+        var body = new StringBuilder();
+        foreach (var kind in PathCatalog.RestoreRiskOrder)
         {
-            shown += $"\n  ほか{riskyPaths.Count - maxShown}件";
+            if (!byKind.TryGetValue(kind, out var paths))
+            {
+                continue;
+            }
+
+            // 分類ごとに必ず件数を出す。分類そのものを隠すことはできないので、
+            // 無害に見えるファイルを大量に詰めても本命の分類を見えなくはできない。
+            body.Append("■ ").Append(PathCatalog.DescribeRestoreRisk(kind))
+                .Append(" : ").Append(paths.Count).AppendLine("件");
+
+            foreach (var path in paths.Take(MaxPathsShownPerKind).OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+            {
+                // 復元先パスはmanifest由来＝攻撃者制御。改行を含む値をそのまま描画すると
+                // このダイアログに偽の注記を差し込んだり、警告文を画面外へ押し出したりできる。
+                body.Append("    ・").AppendLine(UntrustedText.ForDisplay(path));
+            }
+
+            if (paths.Count > MaxPathsShownPerKind)
+            {
+                body.Append("    ほか").Append(paths.Count - MaxPathsShownPerKind).AppendLine("件");
+            }
+
+            body.AppendLine();
         }
 
         var result = MessageBox.Show(
             Application.Current.MainWindow,
-            "次のファイルは、Claudeが外部プログラムを起動するための定義(MCPサーバー設定・hooks・プラグイン/スキル)を" +
-            "含む可能性があります。これらを復元すると、次回のClaude起動時にバックアップ作成者が指定したプログラムが" +
-            "実行される場合があります。\n" +
+            "復元しようとしているバックアップには、復元しただけで実害が及びうるファイルが含まれています。\n" +
+            "Claudeはこれらを起動時に読み込むため、細工されたバックアップを復元すると、" +
+            "バックアップ作成者が指定したプログラムが実行されたり、認証情報が差し替えられたりする場合があります。\n" +
             "\n" +
-            $"{shown}\n" +
-            "\n" +
-            "信頼できるバックアップであることを確認したうえで続行してください。復元を続けますか?",
-            "外部プログラムが実行される可能性があります",
+            $"{body}" +
+            "信頼できる入手元のバックアップであることを確認したうえで続行してください。復元を続けますか?",
+            "復元によって実害が及ぶ可能性があります",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
 

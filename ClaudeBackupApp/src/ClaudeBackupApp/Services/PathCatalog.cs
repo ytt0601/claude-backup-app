@@ -321,14 +321,65 @@ public static class PathCatalog
     }
 
     /// <summary>
-    /// 許可された復元先のうち、復元しただけで外部コマンドの起動につながりうるものかどうか。
+    /// 復元しただけでユーザーに実害が及びうる復元先かどうかの分類。
+    /// 値が大きいほど「何が起きるかを説明しにくい＝先に見せるべき」ではなく、
+    /// <see cref="RestoreRiskOrder"/> で明示した優先度で並べる(列挙順に意味を持たせない)。
+    /// </summary>
+    public enum RestoreRiskKind
+    {
+        /// <summary>純粋なデータ(会話履歴・セッション等)。警告不要。</summary>
+        None,
+
+        /// <summary>認証情報・トークンの差し替え。コード実行ではないが、以後の操作が別アカウントで行われうる。</summary>
+        CredentialReplacement,
+
+        /// <summary>MCPサーバー定義。command/args で任意の実行ファイルを起動する。</summary>
+        McpServerDefinition,
+
+        /// <summary>hooks を含みうる設定ファイル。Claudeが任意のコマンドを実行する。</summary>
+        HookSettings,
+
+        /// <summary>プラグイン・スキル。コードそのもの。</summary>
+        PluginOrSkillCode,
+
+        /// <summary>純粋なデータだと確認できなかったもの。何に使われるか不明なので安全側に倒す。</summary>
+        Unclassified,
+    }
+
+    /// <summary>
+    /// 警告ダイアログでの表示優先度(先頭ほど先に見せる)。
+    /// 一覧を復元先パスの昇順で並べて先頭N件だけ見せると、攻撃者が無害に見える名前のファイルを
+    /// 詰めるだけで本命のエントリを「ほかN件」へ押し出せてしまう。並び順を攻撃者が決められない
+    /// この固定優先度で分類ごとにまとめ、どの分類も必ず件数付きで表示すること。
+    /// </summary>
+    public static readonly IReadOnlyList<RestoreRiskKind> RestoreRiskOrder = new[]
+    {
+        RestoreRiskKind.McpServerDefinition,
+        RestoreRiskKind.HookSettings,
+        RestoreRiskKind.PluginOrSkillCode,
+        RestoreRiskKind.Unclassified,
+        RestoreRiskKind.CredentialReplacement,
+    };
+
+    /// <summary>
+    /// 復元先が「復元しただけで実害が及びうる」ものかを分類する。
     /// IsAllowedRestoreDestination は「システム領域を壊さない」ための境界であって、
     /// 許可範囲の中には Claude 自身が起動時に読み込んで外部プロセスを起動する定義
     /// (MCPサーバー定義、hooks、プラグイン/スキルのコード)が含まれる。つまり信用できないZIPの
     /// 復元は実質的に任意コード実行になりうるため、実行前にユーザーへ明示的な警告を出す判断に使う。
-    /// 警告が目的なので、判定は迷ったら「リスクあり」に倒す(過検出は許容する)。
+    ///
+    /// 判定は<b>「危険なものを列挙する」のではなく「純粋なデータだと確認できたものを除外する」向き</b>
+    /// で書くこと(fail-closed)。復元先は信用できないmanifest由来で任意に指定でき、許可範囲
+    /// (%APPDATA%\Claude, %USERPROFILE%\.claude)の中には settings.json から参照される
+    /// hooksスクリプトのように「ファイル名だけでは列挙しきれない」実行経路があるため、
+    /// 危険側を列挙する形だと列挙漏れがそのまま「警告なしでコードが復元される」穴になる。
+    /// 分類できなかったものは <see cref="RestoreRiskKind.Unclassified"/> であって None ではない。
     /// </summary>
-    public static bool IsCodeExecutionRisk(string destinationPath)
+    /// <param name="linkResolutionCache">
+    /// <see cref="IsAllowedRestoreDestination"/> と同じリンク解決キャッシュ。同一操作内で共有する。
+    /// </param>
+    public static RestoreRiskKind ClassifyRestoreRisk(
+        string destinationPath, IDictionary<string, string>? linkResolutionCache = null)
     {
         string fullPath;
         try
@@ -338,27 +389,130 @@ public static class PathCatalog
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
             // パスとして解釈できないものは復元自体が拒否されるが、判定としては安全側に倒す
-            return true;
+            return RestoreRiskKind.Unclassified;
         }
 
-        // MCPサーバー定義(command/argsで任意の実行ファイルを起動する)を含みうるファイル
-        if (string.Equals(fullPath, ClaudeJsonPath, StringComparison.OrdinalIgnoreCase))
+        // 正規化しただけのパスと、リンクを解決した実パスの両方で分類し、危険な側を採用する。
+        // IsAllowedRestoreDestination と同様にリンクを解いておかないと、例えば
+        // %USERPROFILE%\.claude\projects がジャンクションで plugins を指している環境で、
+        // 「履歴フォルダへの復元」に見えるコードが警告なしで plugins へ書き込まれてしまう。
+        var literal = ClassifyResolvedPath(fullPath);
+        var real = ClassifyResolvedPath(ResolveLinkChain(fullPath, linkResolutionCache));
+
+        return MoreDangerous(literal, real);
+    }
+
+    /// <summary>2つの分類のうち、ユーザーに先に見せるべき(=危険な)方を返す。</summary>
+    private static RestoreRiskKind MoreDangerous(RestoreRiskKind a, RestoreRiskKind b)
+    {
+        if (a == b)
         {
-            return true;
+            return a;
+        }
+
+        foreach (var kind in RestoreRiskOrder)
+        {
+            if (kind == a)
+            {
+                return a;
+            }
+
+            if (kind == b)
+            {
+                return b;
+            }
+        }
+
+        return a == RestoreRiskKind.None ? b : a;
+    }
+
+    /// <summary>
+    /// 正規化済みの絶対パス1本を分類する。
+    /// 「純粋なデータだと確認済み」のものだけを None / CredentialReplacement とし、
+    /// それ以外は必ず警告対象にする。新しいバックアップ対象を追加したとき、
+    /// それが純粋なデータであることを確認できた場合にだけここへ追加すること
+    /// (確認できないものは追加しない = 警告に出る、が正しい状態)。
+    /// </summary>
+    private static RestoreRiskKind ClassifyResolvedPath(string fullPath)
+    {
+        var claudeAppData = ClaudeAppDataDir;
+        var claudeHome = ClaudeHomeDir;
+
+        // 会話履歴・セッション・タスク・プラン(Claudeがデータとして読み書きするだけのもの)
+        string[] dataOnlyDirectories =
+        {
+            Path.Combine(claudeHome, "projects"),
+            Path.Combine(claudeHome, "sessions"),
+            Path.Combine(claudeHome, "tasks"),
+            Path.Combine(claudeHome, "plans"),
+            Path.Combine(claudeAppData, "claude-code-sessions"),
+        };
+
+        foreach (var directory in dataOnlyDirectories)
+        {
+            if (fullPath.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                return RestoreRiskKind.None;
+            }
+        }
+
+        if (string.Equals(fullPath, Path.Combine(claudeHome, "history.jsonl"), StringComparison.OrdinalIgnoreCase))
+        {
+            return RestoreRiskKind.None;
+        }
+
+        // 認証情報・トークン。コード実行にはならないが、細工されたバックアップで差し替えられると
+        // 以後のClaudeの操作が攻撃者のアカウントで行われうるため、警告の対象からは外さない。
+        string[] credentialFiles =
+        {
+            Path.Combine(claudeHome, ".credentials.json"),
+            Path.Combine(claudeAppData, "buddy-tokens.json"),
+            Path.Combine(claudeAppData, "ant-did"),
+        };
+
+        foreach (var file in credentialFiles)
+        {
+            if (string.Equals(fullPath, file, StringComparison.OrdinalIgnoreCase))
+            {
+                return RestoreRiskKind.CredentialReplacement;
+            }
+        }
+
+        // ここから先は「危険であることが分かっている」ものの細分類。
+        // 当てはまらなくても安全にはならず、Unclassified として警告に出る。
+        if (string.Equals(fullPath, ClaudeJsonPath, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Path.GetFileName(fullPath), "claude_desktop_config.json", StringComparison.OrdinalIgnoreCase))
+        {
+            return RestoreRiskKind.McpServerDefinition;
+        }
+
+        var claudeHomePrefix = claudeHome + Path.DirectorySeparatorChar;
+        if (fullPath.StartsWith(claudeHomePrefix + "plugins" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || fullPath.StartsWith(claudeHomePrefix + "skills" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            return RestoreRiskKind.PluginOrSkillCode;
         }
 
         var fileName = Path.GetFileName(fullPath);
-        if (string.Equals(fileName, "claude_desktop_config.json", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(fileName, "settings.json", StringComparison.OrdinalIgnoreCase))
+        if (fileName.StartsWith("settings", StringComparison.OrdinalIgnoreCase)
+            && fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
         {
-            return true;
+            return RestoreRiskKind.HookSettings;
         }
 
-        // プラグイン・スキルはコードそのもの
-        var claudeHome = ClaudeHomeDir + Path.DirectorySeparatorChar;
-        return fullPath.StartsWith(claudeHome + "plugins" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-            || fullPath.StartsWith(claudeHome + "skills" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        return RestoreRiskKind.Unclassified;
     }
+
+    /// <summary>分類を、警告ダイアログの見出しに使う日本語にする。</summary>
+    public static string DescribeRestoreRisk(RestoreRiskKind kind) => kind switch
+    {
+        RestoreRiskKind.McpServerDefinition => "MCPサーバー定義(任意の実行ファイルを起動する設定)",
+        RestoreRiskKind.HookSettings => "設定ファイル(hooks により任意のコマンドが実行されうる)",
+        RestoreRiskKind.PluginOrSkillCode => "プラグイン・スキル(コードそのもの)",
+        RestoreRiskKind.Unclassified => "用途を判別できないファイル(安全とは確認できていない)",
+        RestoreRiskKind.CredentialReplacement => "認証情報・トークン(差し替えられると別アカウントで動作しうる)",
+        _ => "その他",
+    };
 
     /// <summary>
     /// 絶対パスを、現在の実行環境非依存な (ルート種別, ルートからの相対パス) に変換する。
