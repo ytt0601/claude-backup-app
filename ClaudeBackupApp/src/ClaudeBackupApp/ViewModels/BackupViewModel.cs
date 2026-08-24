@@ -58,6 +58,28 @@ public partial class BackupViewModel : ObservableObject
 
         if (dialog.ShowDialog() == true)
         {
+            // バックアップZIPは暗号化されないため、ネットワーク上の保存先を選ぶと認証情報が
+            // そのまま外部へ出ていく。ユーザー自身の明示的な選択は尊重するが、警告は必ず出す。
+            if (!SettingsService.IsLocalFixedPath(dialog.FolderName))
+            {
+                var proceed = MessageBox.Show(
+                    Application.Current.MainWindow,
+                    $"選択した保存先はローカルドライブではない可能性があります:\n{dialog.FolderName}\n" +
+                    "\n" +
+                    "バックアップファイルは暗号化されず、認証情報やAPIキーを平文で含みます。" +
+                    "ネットワーク共有や同期フォルダに保存すると、これらが外部へ複製されます。\n" +
+                    "\n" +
+                    "この保存先を使用しますか?",
+                    "保存先の確認",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+
+                if (proceed != MessageBoxResult.Yes)
+                {
+                    return;
+                }
+            }
+
             DestinationFolder = dialog.FolderName;
 
             try
@@ -98,6 +120,36 @@ public partial class BackupViewModel : ObservableObject
                 MessageBoxImage.Warning);
 
             if (result != MessageBoxResult.OK)
+            {
+                return;
+            }
+        }
+
+        // 認証情報カテゴリを外しても、Desktop設定・Code設定にはMCPサーバー定義の環境変数などの形で
+        // APIキーが入りうる。ZIPは暗号化されないため、取り扱いの注意を実行前に必ず示す(要件6章)。
+        var sensitiveNames = Categories
+            .Where(c => c.IsChecked && c.ContainsSensitiveData)
+            .Select(c => c.DisplayName)
+            .ToList();
+
+        if (sensitiveNames.Count > 0)
+        {
+            var confirm = MessageBox.Show(
+                Application.Current.MainWindow,
+                "次のカテゴリには認証情報・APIキーが含まれる可能性があります:\n" +
+                string.Join("\n", sensitiveNames.Select(n => $"  ・{n}")) + "\n" +
+                "\n" +
+                "作成されるバックアップファイルは暗号化されません。内容を平文で読み取れるため、" +
+                "他人と共有したり、クラウド同期フォルダ・共有フォルダへ置いたりしないでください。\n" +
+                "\n" +
+                $"保存先: {DestinationFolder}\n" +
+                "\n" +
+                "バックアップを実行しますか?",
+                "バックアップの確認",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (confirm != MessageBoxResult.Yes)
             {
                 return;
             }

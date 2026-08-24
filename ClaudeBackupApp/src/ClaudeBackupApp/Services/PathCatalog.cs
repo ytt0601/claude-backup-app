@@ -226,8 +226,17 @@ public static class PathCatalog
     /// %USERPROFILE%\.claude.json)配下かどうかを検証する。
     /// manifest.jsonはユーザーが選択した(=第三者から渡された可能性もある)バックアップZIPの中身であり
     /// 信用できないため、リストア時に任意パスへ書き込まれることを防ぐガードとして使用する。
+    ///
+    /// Path.GetFullPath による正規化("..\"の除去)だけでは、途中の階層がシンボリックリンクや
+    /// ディレクトリジャンクション(Windowsでは非管理者でも mklink /J で作成可能)だった場合に
+    /// 実際の書き込み先が許可範囲外へ逃げるため、リンクを解決した実パスでも同じ判定を行う。
     /// </summary>
-    public static bool IsAllowedRestoreDestination(string destinationPath)
+    /// <param name="linkResolutionCache">
+    /// リンク解決はパスの階層数ぶんファイルシステムを叩くため、同一リストア内で使い回すキャッシュ。
+    /// 省略した場合は都度解決する(単発の判定用)。
+    /// </param>
+    public static bool IsAllowedRestoreDestination(
+        string destinationPath, IDictionary<string, string>? linkResolutionCache = null)
     {
         string fullPath;
         try
@@ -239,12 +248,116 @@ public static class PathCatalog
             return false;
         }
 
+        if (!IsUnderAllowedRoot(fullPath))
+        {
+            return false;
+        }
+
+        // 正規化後のパスが許可範囲でも、途中のリンクで実体が範囲外を指していれば拒否する。
+        var realPath = ResolveLinkChain(fullPath, linkResolutionCache);
+        return IsUnderAllowedRoot(realPath);
+    }
+
+    private static bool IsUnderAllowedRoot(string fullPath)
+    {
         var claudeAppData = ClaudeAppDataDir + Path.DirectorySeparatorChar;
         var claudeHome = ClaudeHomeDir + Path.DirectorySeparatorChar;
 
         return fullPath.StartsWith(claudeAppData, StringComparison.OrdinalIgnoreCase)
             || fullPath.StartsWith(claudeHome, StringComparison.OrdinalIgnoreCase)
             || string.Equals(fullPath, ClaudeJsonPath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// パスをルートから1階層ずつ辿り、シンボリックリンク・ジャンクションを最終ターゲットまで
+    /// 解決した実パスを返す。まだ存在しない階層(これから作る復元先など)はそのまま連結する。
+    /// 途中階層を1つずつ見るのは、FileSystemInfo.ResolveLinkTarget が「そのパス自身」しか
+    /// 解決せず、祖先にあるリンクを見逃すため。
+    /// </summary>
+    private static string ResolveLinkChain(string fullPath, IDictionary<string, string>? cache)
+    {
+        var root = Path.GetPathRoot(fullPath);
+        if (string.IsNullOrEmpty(root))
+        {
+            return fullPath;
+        }
+
+        // ディレクトリ部分だけ解決すればよい(最終要素はこれから作る/置き換えるファイル)。
+        var directory = Path.GetDirectoryName(fullPath);
+        var fileName = Path.GetFileName(fullPath);
+        if (string.IsNullOrEmpty(directory))
+        {
+            return fullPath;
+        }
+
+        if (cache is not null && cache.TryGetValue(directory, out var cached))
+        {
+            return Path.Combine(cached, fileName);
+        }
+
+        var segments = directory[root.Length..]
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+
+        var current = root;
+        foreach (var segment in segments)
+        {
+            current = Path.Combine(current, segment);
+            try
+            {
+                var target = Directory.ResolveLinkTarget(current, returnFinalTarget: true);
+                if (target is not null)
+                {
+                    current = target.FullName;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                // 存在しない・権限不足で解決できない階層は、そのままのパスとして扱う
+            }
+        }
+
+        cache?.TryAdd(directory, current);
+        return Path.Combine(current, fileName);
+    }
+
+    /// <summary>
+    /// 許可された復元先のうち、復元しただけで外部コマンドの起動につながりうるものかどうか。
+    /// IsAllowedRestoreDestination は「システム領域を壊さない」ための境界であって、
+    /// 許可範囲の中には Claude 自身が起動時に読み込んで外部プロセスを起動する定義
+    /// (MCPサーバー定義、hooks、プラグイン/スキルのコード)が含まれる。つまり信用できないZIPの
+    /// 復元は実質的に任意コード実行になりうるため、実行前にユーザーへ明示的な警告を出す判断に使う。
+    /// 警告が目的なので、判定は迷ったら「リスクあり」に倒す(過検出は許容する)。
+    /// </summary>
+    public static bool IsCodeExecutionRisk(string destinationPath)
+    {
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(destinationPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            // パスとして解釈できないものは復元自体が拒否されるが、判定としては安全側に倒す
+            return true;
+        }
+
+        // MCPサーバー定義(command/argsで任意の実行ファイルを起動する)を含みうるファイル
+        if (string.Equals(fullPath, ClaudeJsonPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var fileName = Path.GetFileName(fullPath);
+        if (string.Equals(fileName, "claude_desktop_config.json", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(fileName, "settings.json", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // プラグイン・スキルはコードそのもの
+        var claudeHome = ClaudeHomeDir + Path.DirectorySeparatorChar;
+        return fullPath.StartsWith(claudeHome + "plugins" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || fullPath.StartsWith(claudeHome + "skills" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

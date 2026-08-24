@@ -45,8 +45,14 @@ MVVM構成(CommunityToolkit.Mvvm使用)。`MainViewModel` が `BackupViewModel` 
 
 **セキュリティ境界**: `manifest.json` は第三者から渡されたZIPの中身である可能性があり信用できない。そのため `RestoreService` は書き込み前に必ず `PathCatalog.IsAllowedRestoreDestination` で復元先が正規のClaude関連パス(`%APPDATA%\Claude`, `%USERPROFILE%\.claude`, `%USERPROFILE%\.claude.json`)配下であることを検証する(パストラバーサル対策)。新しい復元先パスを扱うコードを書く場合は必ずこの検証を通すこと。
 
+- **この検証はコード実行を防がない**: 許可範囲の中には、Claudeが起動時に読み込んで**外部プロセスを起動する**定義が含まれる(`claude_desktop_config.json` と `.claude.json` のMCPサーバー定義、`.claude/settings.json` のhooks、`.claude/plugins`・`.claude/skills` のコード)。つまり `IsAllowedRestoreDestination` は「システム領域を壊さない」ための境界であって、**信用できないZIPの復元は実質的に任意コード実行になりうる**。この残余リスクに対する防御はパス検証ではなく、`RestoreViewModel` の2段階の警告ダイアログ(出所の確認 + `PathCatalog.IsCodeExecutionRisk` に該当するファイルの列挙)である。コード実行につながる新しいファイルを対象に加えるときは `IsCodeExecutionRisk` にも追加すること。判定は警告が目的なので、迷ったら「リスクあり」に倒す(過検出は許容)。
+- **リンク解決込みで検証する**: `Path.GetFullPath` は `..\` を畳むだけでシンボリックリンク・ジャンクション(Windowsでは非管理者でも `mklink /J` で作成可能)を解決しない。そのため `IsAllowedRestoreDestination` は正規化パスに加え、`ResolveLinkChain` で各階層のリンクを解決した実パスでも許可範囲内であることを要求する。解決は階層ごとにファイルシステムを叩くため `RestoreCore` が実行単位のキャッシュを渡す。キャッシュを `static` にしないこと(検証と書き込みの間隔が開きTOCTOUが広がる)。
+- **信用できない入力にはサイズ・件数の上限をかける**: `ReadManifestCoreAsync` は宣言ファイル件数を `MaxRestoreFileCount` で、`ExtractWithLimit` は展開バイト数を `MaxEntryBytes` / `MaxTotalBytes` で打ち切る(zip bomb対策)。展開量は `ZipArchiveEntry.Length`(ヘッダの宣言値、偽装可能)ではなく**実際に書き出したバイト数**で数えること。
+- **manifest由来の文字列はログに直接書かない**: 復元先パスやカテゴリ表示名はmanifest由来＝攻撃者制御であり、改行を含む値をそのまま書くと「1行1エントリ」のログに偽の完了行を捏造できる。`OperationLogger.Report` が `SanitizeForLog` で制御文字をエスケープするので、ログ出力は必ずここを経由させること。
+
 **リストアの安全な差し替え手順**: `RestoreService.RestoreCore` は「一時ファイルへ展開→成功したら既存ファイルを退避フォルダ(`%LOCALAPPDATA%\ClaudeBackupApp\PreRestoreEvacuation\yyyyMMdd_HHmmss\`)へ移動→一時ファイルを本来の場所へ移動」の順で行う。ZIPエントリ破損などで展開が失敗しても既存ファイルを失わないようにするための順序であり、変更しないこと。
 
+- **退避データは機密であり無期限に残さない**: 退避されるのは復元先の**元ファイル**であり、`credentials` カテゴリを復元した場合は認証情報が平文でここに残る。`PruneOldEvacuations` が直近 `EvacuationGenerationsToKeep` 世代のみを保持し、それより古い世代を削除する。世代整理は**リストア本体が終わったあと**(`finally`)に行うこと。先に消すと、今回のリストアが失敗したときに古い世代まで失われる。削除は必ずログに記録する(気づけない消失を作らないため)。
 - **退避先フォルダの実在＝退避成功ではない**: `EvacuateIfExists` は `File.Move` の**前**に退避先の親フォルダを作るため、退避が全件失敗しても(復元先が使用中でロックされている場合など)フォルダだけは残る。復元失敗時に退避ファイルを元の場所へ戻す経路もあるため、フォルダが空になることもある。したがって「退避された元ファイルがあるか」を `Directory.Exists` で判定してはならない。`RestoreCore` が保持する退避件数(`onEvacuationUpdated` コールバックでUIへ通知)で判断すること。誤ると、元ファイルが保全されていないのに「退避済みの元ファイルは次の場所にあります」と案内してしまう。
 
 **Claude Desktop起動中の検知**: `ClaudeProcessService` はプロセス名 `claude` で列挙した上で、`FileVersionInfo.ProductName` が `"Claude Code"`(ターミナルの `claude` CLIやDesktop内蔵の `claude-code` バイナリ)と一致するものだけを除外し、それ以外はすべてDesktop本体(Electron製、製品名 `"Claude"`)として数える。積極的に「CLIだ」と判定できたものだけを除外し、それ以外(将来Desktop側の製品名表記が変わった場合や、モジュール情報取得に失敗した場合を含む)は「起動中かもしれない」側(true)に倒す安全側の実装になっている。

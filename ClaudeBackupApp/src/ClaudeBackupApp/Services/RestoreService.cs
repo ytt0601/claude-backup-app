@@ -8,6 +8,25 @@ namespace ClaudeBackupApp.Services;
 public class RestoreService
 {
     /// <summary>
+    /// 信用できないZIPによるディスク枯渇(zip bomb)を防ぐための上限。
+    /// ZIPヘッダ上の非圧縮サイズは偽装できるため、宣言値ではなく実際に書き出したバイト数で打ち切る。
+    /// Claudeの設定・履歴ファイルの実サイズから見て十分な余裕を取った値。
+    /// </summary>
+    private const long MaxEntryBytes = 512L * 1024 * 1024;
+
+    /// <summary>1回のリストア全体で展開してよい合計バイト数。</summary>
+    private const long MaxTotalBytes = 8L * 1024 * 1024 * 1024;
+
+    /// <summary>manifest.jsonが宣言してよい復元ファイル件数の上限。</summary>
+    private const int MaxRestoreFileCount = 100_000;
+
+    /// <summary>
+    /// 退避フォルダ(PreRestoreEvacuation)の保持世代数。退避された元ファイルには認証情報が
+    /// 平文で含まれうるため、無期限に溜め続けない。直近数回分は復旧手段として残す。
+    /// </summary>
+    private const int EvacuationGenerationsToKeep = 5;
+
+    /// <summary>
     /// バックアップZIP内の manifest.json を読み込む。復元処理はこのmanifestのみに依存し、
     /// PathCatalog(現在のアプリのパス定義)には依存しない。将来パス定義が変わっても
     /// 過去のバックアップを元の場所へ正しく復元できるようにするため。
@@ -34,9 +53,19 @@ public class RestoreService
 
         // 第三者由来のZIPで "Files" が null に細工されている可能性があるため、
         // 復元処理側で null 前提の操作(SelectMany等)が未処理例外を起こさないよう正規化する。
+        var declaredFileCount = 0;
         foreach (var category in manifest.Categories)
         {
             category.Files ??= new List<BackupManifestFile>();
+            declaredFileCount += category.Files.Count;
+        }
+
+        // 件数を膨らませたmanifestでメモリ・処理時間を食い潰されないよう、読み込み段階で打ち切る。
+        if (declaredFileCount > MaxRestoreFileCount)
+        {
+            throw new InvalidDataException(
+                $"manifest.jsonのファイル件数({declaredFileCount:N0}件)が上限({MaxRestoreFileCount:N0}件)を超えています。" +
+                "有効なバックアップファイルではない可能性があります。");
         }
 
         return manifest;
@@ -111,6 +140,12 @@ public class RestoreService
         // 「消費」してしまうと、復元できたはずの2件目まで巻き添えでスキップされてしまう。)
         var restoredDestinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // 復元先検証のリンク解決は階層数ぶんファイルシステムを叩くため、同一リストア内で使い回す。
+        // (静的キャッシュにすると検証と書き込みの間隔が開きTOCTOUが広がるので、実行ごとに作る。)
+        var linkResolutionCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var extractedTotalBytes = 0L;
+
         var files = manifest.Categories
             .Where(c => selectedCategoryIds.Contains(c.Id))
             .SelectMany(c => c.Files)
@@ -131,7 +166,7 @@ public class RestoreService
 
                 try
                 {
-                    if (!PathCatalog.IsAllowedRestoreDestination(destination))
+                    if (!PathCatalog.IsAllowedRestoreDestination(destination, linkResolutionCache))
                     {
                         logger.Report(progress, index + 1, total, destination, LogLevel.Warning,
                             $"スキップ(不正な復元先パス): {destination}");
@@ -162,7 +197,9 @@ public class RestoreService
                     // 展開はまず一時ファイルへ行い、成功してから既存ファイルを退避して差し替える。
                     // こうすることでZIPエントリが壊れている等で展開が失敗しても、既存の元ファイルを失わない。
                     tempPath = destination + $".restoring_{Guid.NewGuid():N}.tmp";
-                    entry.ExtractToFile(tempPath, overwrite: true);
+                    var extractedBytes = ExtractWithLimit(
+                        entry, tempPath, MaxTotalBytes - extractedTotalBytes, cancellationToken);
+                    extractedTotalBytes += extractedBytes;
 
                     var evacuatedPath = EvacuateIfExists(destination, evacuationRoot);
                     if (evacuatedPath is not null)
@@ -243,6 +280,105 @@ public class RestoreService
                     : $"リストアがエラーで中断しました{evacuationNote}";
 
             logger.Report(progress, processedCount, total, string.Empty, LogLevel.Info, message);
+
+            // 世代整理は今回の退避が確定してから行う(先に消すと、今回のリストアが失敗したときに
+            // 古い世代まで失われる)。今回分を含めて EvacuationGenerationsToKeep 世代を残す。
+            PruneOldEvacuations(evacuationRoot, logger, progress, processedCount, total);
+        }
+    }
+
+    /// <summary>
+    /// ZIPエントリを上限バイト数まで一時ファイルへ展開し、書き出したバイト数を返す。
+    /// ZipArchiveEntry.Length(ヘッダ上の非圧縮サイズ)は信用できないため、宣言値ではなく
+    /// 実際に書き出した量で打ち切る(zip bomb対策)。
+    /// ExtractToFileと違い最終更新日時が引き継がれないので、明示的に復元する。
+    /// </summary>
+    private static long ExtractWithLimit(
+        ZipArchiveEntry entry, string tempPath, long remainingTotalBudget, CancellationToken cancellationToken)
+    {
+        var limit = Math.Min(MaxEntryBytes, Math.Max(remainingTotalBudget, 0));
+
+        long written = 0;
+        using (var source = entry.Open())
+        using (var target = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
+        {
+            var buffer = new byte[81920];
+            int read;
+            while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                written += read;
+                if (written > limit)
+                {
+                    throw new InvalidDataException(
+                        $"展開サイズが上限を超えました(上限 {limit:N0} バイト)。" +
+                        "極端に大きなデータを含むバックアップファイルの可能性があります。");
+                }
+
+                target.Write(buffer, 0, read);
+            }
+        }
+
+        try
+        {
+            File.SetLastWriteTimeUtc(tempPath, entry.LastWriteTime.UtcDateTime);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentOutOfRangeException)
+        {
+            // ZIP側の日時が不正(範囲外)でも復元自体は続行する
+        }
+
+        return written;
+    }
+
+    /// <summary>
+    /// 退避フォルダ(PreRestoreEvacuation)の古い世代を削除する。
+    /// 退避された元ファイルには認証情報が平文で含まれうるため、無期限に溜め続けない。
+    /// 直近 <see cref="EvacuationGenerationsToKeep"/> 世代は復旧手段として残す。
+    /// 削除は「消えたことに気づけない」失敗モードを避けるため、必ずログへ記録する。
+    /// </summary>
+    private static void PruneOldEvacuations(
+        string currentEvacuationRoot,
+        OperationLogger logger,
+        IProgress<OperationProgress>? progress,
+        int processedCount,
+        int total)
+    {
+        try
+        {
+            var parent = Path.GetDirectoryName(currentEvacuationRoot);
+            if (string.IsNullOrEmpty(parent) || !Directory.Exists(parent))
+            {
+                return;
+            }
+
+            // フォルダ名はyyyyMMdd_HHmmssなので、序数の降順が新しい順になる。
+            var generations = Directory.GetDirectories(parent)
+                .OrderByDescending(d => Path.GetFileName(d), StringComparer.Ordinal)
+                .Skip(EvacuationGenerationsToKeep)
+                .ToList();
+
+            foreach (var stale in generations)
+            {
+                try
+                {
+                    Directory.Delete(stale, recursive: true);
+                    logger.Report(progress, processedCount, total, stale, LogLevel.Info,
+                        $"古い退避フォルダを削除しました(保持{EvacuationGenerationsToKeep}世代): {stale}");
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    logger.Report(progress, processedCount, total, stale, LogLevel.Warning,
+                        $"古い退避フォルダを削除できませんでした: {stale} ({ex.Message})");
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 世代整理の失敗はリストア本体の成否に影響させない
+            logger.Report(progress, processedCount, total, string.Empty, LogLevel.Warning,
+                $"退避フォルダの世代整理に失敗しました: {ex.Message}");
         }
     }
 

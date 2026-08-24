@@ -121,12 +121,23 @@ public partial class RestoreViewModel : ObservableObject
 
         var confirm = MessageBox.Show(
             Application.Current.MainWindow,
-            "選択したカテゴリを復元します。上書きされる既存ファイルは復元前に自動的に退避されます。\n実行しますか?",
+            "選択したカテゴリを復元します。上書きされる既存ファイルは復元前に自動的に退避されます。\n" +
+            "\n" +
+            "【ご確認ください】バックアップファイルは、必ずご自身が作成したものか、信頼できる入手元のものだけを使用してください。\n" +
+            "Claudeの設定ファイルには外部コマンドを起動する定義が含まれるため、細工されたバックアップを復元すると、" +
+            "次回のClaude起動時に意図しないプログラムが実行される可能性があります。\n" +
+            "\n" +
+            "実行しますか?",
             "リストアの確認",
             MessageBoxButton.YesNo,
-            MessageBoxImage.Question);
+            MessageBoxImage.Warning);
 
         if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        if (!ConfirmCodeExecutionRisk(selectedIds))
         {
             return;
         }
@@ -177,6 +188,59 @@ public partial class RestoreViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    /// <summary>
+    /// 復元対象に「復元しただけで外部コマンドの起動につながりうるファイル」が含まれる場合、
+    /// 該当ファイルを列挙して最終確認を取る。
+    /// PathCatalog.IsAllowedRestoreDestination は復元先をClaude関連パスに限定するが、
+    /// その許可範囲の中にMCPサーバー定義・hooks・プラグイン/スキルのコードが含まれるため、
+    /// パス検証だけでは「信用できないZIPによる任意コード実行」を防げない。
+    /// 何が書き換わるのかを具体的に見せることが、最後の防御線になる。
+    /// </summary>
+    /// <returns>続行してよい場合はtrue</returns>
+    private bool ConfirmCodeExecutionRisk(IReadOnlyList<string> selectedCategoryIds)
+    {
+        if (_manifest is null)
+        {
+            return false;
+        }
+
+        var riskyPaths = _manifest.Categories
+            .Where(c => selectedCategoryIds.Contains(c.Id))
+            .SelectMany(c => c.Files)
+            .Select(f => PathCatalog.ResolvePortablePath(f.RootKind, f.RelativePath) ?? f.Destination)
+            .Where(PathCatalog.IsCodeExecutionRisk)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (riskyPaths.Count == 0)
+        {
+            return true;
+        }
+
+        const int maxShown = 10;
+        var shown = string.Join("\n", riskyPaths.Take(maxShown).Select(p => $"  ・{p}"));
+        if (riskyPaths.Count > maxShown)
+        {
+            shown += $"\n  ほか{riskyPaths.Count - maxShown}件";
+        }
+
+        var result = MessageBox.Show(
+            Application.Current.MainWindow,
+            "次のファイルは、Claudeが外部プログラムを起動するための定義(MCPサーバー設定・hooks・プラグイン/スキル)を" +
+            "含む可能性があります。これらを復元すると、次回のClaude起動時にバックアップ作成者が指定したプログラムが" +
+            "実行される場合があります。\n" +
+            "\n" +
+            $"{shown}\n" +
+            "\n" +
+            "信頼できるバックアップであることを確認したうえで続行してください。復元を続けますか?",
+            "外部プログラムが実行される可能性があります",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        return result == MessageBoxResult.Yes;
     }
 
     /// <summary>
