@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.IO;
 using System.Windows;
 using ClaudeBackupApp.Models;
 using ClaudeBackupApp.Services;
@@ -148,25 +147,30 @@ public partial class RestoreViewModel : ObservableObject
             }
         });
 
-        // 退避先はRestoreAsyncの戻り値でも得られるが、それは正常終了時のみ。中断・エラーで終わった場合こそ
-        // 「退避された元ファイルがどこにあるか」の案内が要るため、開始時のコールバックでも受け取っておく。
+        // 退避先と退避件数は処理中のコールバックで受け取る。中断・エラーで終わった場合こそ
+        // 「退避された元ファイルがどこにあるか」の案内が要るため、戻り値では間に合わない。
         string? evacuationRoot = null;
-        void CaptureEvacuationRoot(string root) => evacuationRoot = root;
+        var evacuatedCount = 0;
+        void OnEvacuationUpdated(string root, int count)
+        {
+            evacuationRoot = root;
+            evacuatedCount = count;
+        }
 
         try
         {
             StatusText = "リストア中...";
-            evacuationRoot = await _restoreService.RestoreAsync(
-                BackupFilePath, _manifest, selectedIds, progress, CaptureEvacuationRoot, _cts.Token);
-            StatusText = $"完了(退避先: {evacuationRoot})";
+            await _restoreService.RestoreAsync(
+                BackupFilePath, _manifest, selectedIds, progress, OnEvacuationUpdated, _cts.Token);
+            StatusText = AppendEvacuationHint("リストアが完了しました。", evacuationRoot, evacuatedCount);
         }
         catch (OperationCanceledException)
         {
-            StatusText = AppendEvacuationHint("キャンセルしました。", evacuationRoot);
+            StatusText = AppendEvacuationHint("キャンセルしました。", evacuationRoot, evacuatedCount);
         }
         catch (Exception ex)
         {
-            StatusText = AppendEvacuationHint($"エラー: {ex.Message}", evacuationRoot);
+            StatusText = AppendEvacuationHint($"エラー: {ex.Message}", evacuationRoot, evacuatedCount);
             LogLines.Add($"[Error] {ex.Message}");
         }
         finally
@@ -176,17 +180,20 @@ public partial class RestoreViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 中断・エラー時のステータス文に退避先フォルダの案内を付ける。実際に退避が発生した場合のみ付けるため、
-    /// フォルダの実在を確認する(1件も退避せずに終わったときに存在しないパスを案内すると、かえって混乱させるため)。
+    /// ステータス文に退避先フォルダの案内を付ける。正常終了・中断・エラーのいずれの経路でも、
+    /// 退避された元ファイルが実際に残っている場合にのみ付ける。
+    /// 判定にフォルダの実在を使わないのは、RestoreServiceが退避に失敗した場合でも
+    /// (File.Moveの前に親フォルダを作るため)フォルダだけは存在しうるからで、
+    /// 存在しない・空のフォルダを案内すると元ファイルが保全されていると誤解させてしまう。
     /// </summary>
-    private static string AppendEvacuationHint(string message, string? evacuationRoot)
+    private static string AppendEvacuationHint(string message, string? evacuationRoot, int evacuatedCount)
     {
-        if (string.IsNullOrEmpty(evacuationRoot) || !Directory.Exists(evacuationRoot))
+        if (evacuatedCount <= 0 || string.IsNullOrEmpty(evacuationRoot))
         {
             return message;
         }
 
-        return $"{message} 退避済みの元ファイルは次の場所にあります: {evacuationRoot}";
+        return $"{message} 退避済みの元ファイル({evacuatedCount}件)は次の場所にあります: {evacuationRoot}";
     }
 
     private bool CanRunRestore() => !IsBusy && IsManifestLoaded;

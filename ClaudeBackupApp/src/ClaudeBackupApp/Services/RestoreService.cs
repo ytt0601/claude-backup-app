@@ -51,39 +51,46 @@ public class RestoreService
     /// %APPDATA%・%USERPROFILE%を基準に復元先を再解決する(別マシン/別ユーザーアカウントへの復元に対応)。
     /// ファイルI/Oはすべて同期APIのため、UIスレッドをブロックしないよう全体をバックグラウンドスレッドで実行する。
     /// </summary>
-    /// <param name="onEvacuationRootDetermined">
-    /// 退避先フォルダが決まった直後(実際の復元を始める前)に呼ばれる。戻り値は正常終了時にしか
-    /// 呼び出し元へ渡らないため、キャンセル・例外で終わった場合でも「退避した元ファイルがどこにあるか」を
-    /// 案内できるようにするためのもの。バックグラウンドスレッドから呼ばれる点に注意。
+    /// <param name="onEvacuationUpdated">
+    /// 退避先フォルダと「実際に退避したまま残っているファイルの件数」が変化するたびに
+    /// (退避に成功したとき、および復元失敗で退避ファイルを元の場所へ戻したとき)呼ばれる。
+    /// 1件も退避しなかった場合は一度も呼ばれない。
+    /// キャンセル・例外で終わった場合こそ「退避した元ファイルがどこにあるか」の案内が要るため、
+    /// 戻り値ではなく処理中のコールバックで渡す。
+    /// 件数を併せて渡すのは、退避先フォルダが退避の成否によらず作成されうる
+    /// (<see cref="EvacuateIfExists"/> が File.Move の前に親フォルダを作る)ため、
+    /// フォルダの実在では「退避したファイルがあるか」を判断できないから。
+    /// バックグラウンドスレッドから呼ばれる点に注意。
     /// </param>
-    /// <returns>今回の退避先フォルダ(何も退避しなかった場合でもパスは返す)</returns>
-    public Task<string> RestoreAsync(
+    public Task RestoreAsync(
         string zipPath,
         BackupManifest manifest,
         IReadOnlyList<string> selectedCategoryIds,
         IProgress<OperationProgress>? progress,
-        Action<string>? onEvacuationRootDetermined,
+        Action<string, int>? onEvacuationUpdated,
         CancellationToken cancellationToken)
     {
         return Task.Run(
-            () => RestoreCore(zipPath, manifest, selectedCategoryIds, progress, onEvacuationRootDetermined, cancellationToken),
+            () => RestoreCore(zipPath, manifest, selectedCategoryIds, progress, onEvacuationUpdated, cancellationToken),
             cancellationToken);
     }
 
-    private static string RestoreCore(
+    private static void RestoreCore(
         string zipPath,
         BackupManifest manifest,
         IReadOnlyList<string> selectedCategoryIds,
         IProgress<OperationProgress>? progress,
-        Action<string>? onEvacuationRootDetermined,
+        Action<string, int>? onEvacuationUpdated,
         CancellationToken cancellationToken)
     {
         var evacuationRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ClaudeBackupApp", "PreRestoreEvacuation", DateTimeOffset.Now.ToString("yyyyMMdd_HHmmss"));
 
-        // ZIPを開く前に通知する。ここから先で例外が出ても呼び出し元が退避先を案内できるようにするため。
-        onEvacuationRootDetermined?.Invoke(evacuationRoot);
+        // 退避フォルダに元ファイルが残っている件数。退避に成功したら増やし、復元失敗で元の場所へ
+        // 戻したら減らす。呼び出し元への案内は「フォルダが作られたか」ではなくこの件数で判断する。
+        var evacuatedCount = 0;
+        void ReportEvacuation() => onEvacuationUpdated?.Invoke(evacuationRoot, evacuatedCount);
 
         using var logger = new OperationLogger("Restore");
         using var archive = ZipFile.OpenRead(zipPath);
@@ -158,6 +165,11 @@ public class RestoreService
                     entry.ExtractToFile(tempPath, overwrite: true);
 
                     var evacuatedPath = EvacuateIfExists(destination, evacuationRoot);
+                    if (evacuatedPath is not null)
+                    {
+                        evacuatedCount++;
+                        ReportEvacuation();
+                    }
 
                     try
                     {
@@ -176,6 +188,8 @@ public class RestoreService
                             try
                             {
                                 File.Move(evacuatedPath, destination, overwrite: true);
+                                evacuatedCount--;
+                                ReportEvacuation();
                             }
                             catch (Exception ex2) when (ex2 is IOException or UnauthorizedAccessException)
                             {
@@ -216,16 +230,20 @@ public class RestoreService
         }
         finally
         {
+            // 退避が1件も発生していないときに退避先パスを書くと、存在しない(または空の)フォルダに
+            // 元ファイルが保全されているかのように読めてしまうため、件数で出し分ける。
+            var evacuationNote = evacuatedCount > 0
+                ? $"(退避先: {evacuationRoot} / {evacuatedCount}件)"
+                : "(退避したファイルはありません)";
+
             var message = completed
-                ? $"リストア完了(退避先: {evacuationRoot})"
+                ? $"リストア完了{evacuationNote}"
                 : cancellationToken.IsCancellationRequested
-                    ? $"リストアを中断しました(退避先: {evacuationRoot})"
-                    : $"リストアがエラーで中断しました(退避先: {evacuationRoot})";
+                    ? $"リストアを中断しました{evacuationNote}"
+                    : $"リストアがエラーで中断しました{evacuationNote}";
 
             logger.Report(progress, processedCount, total, string.Empty, LogLevel.Info, message);
         }
-
-        return evacuationRoot;
     }
 
     /// <summary>

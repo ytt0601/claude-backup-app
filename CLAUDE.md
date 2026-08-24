@@ -36,7 +36,7 @@ MVVM構成(CommunityToolkit.Mvvm使用)。`MainViewModel` が `BackupViewModel` 
 - 既存カテゴリに含めるか新カテゴリを作るかは、そのファイルの**生成元アプリケーション**(Desktop本体 / Claude Code CLI / Cowork)を基準に決める。`%APPDATA%\Claude` 配下かどうかといった**物理的なパスの近さだけでは判断しない**こと(例: `%LOCALAPPDATA%\Claude\config.json` はパス上は `desktop-settings` に近く見えても、Claude Codeが書き込むファイルなら `code-settings` に分類する)。
 - `ContainsSensitiveData` を `true` から `false` へ**緩和してよいのは、対象ファイルの実データを確認して機微情報を含まないと確証を得た場合だけ**。「中身を確認できないので安全側に倒して `true`」という経緯で付いた値を、後から推測だけで `false` に戻さないこと(緩和は一方向)。
 
-**コードとドキュメントの同期**: `PathCatalog` のカテゴリ定義と除外対象は `要件定義書.md` 4章を実装したもの。どちらか一方だけを変えないこと。カテゴリを追加・変更したら `要件定義書.md` の**3章**(バックアップ画面のカテゴリ件数の表記)と**4章の対象パス表**を、除外対象を追加したら**4章「除外対象」の一覧**を、いずれも同じコミットで更新する。これは「余裕があれば」の推奨ではなく、カテゴリ定義の変更に必ず含める作業。**この CLAUDE.md 自身**も同期対象で、下の「バックアップ/リストアの対称性」がカテゴリIDを列挙しているため、カテゴリを増減したらここも直す。
+**コードとドキュメントの同期**: `PathCatalog` のカテゴリ定義と除外対象は `要件定義書.md` 4章を実装したもの。どちらか一方だけを変えないこと。カテゴリを追加・変更したら `要件定義書.md` の**3章**(バックアップ画面のカテゴリ件数の表記)と**4章の対象パス表**を、除外対象を追加したら**4章「除外対象」の一覧**を、いずれも同じコミットで更新する。これは「余裕があれば」の推奨ではなく、カテゴリ定義の変更に必ず含める作業。**この CLAUDE.md 自身**も同期対象で、上の「バックアップ/リストアの対称性」がカテゴリIDを列挙しているため、カテゴリを増減したらここも直す。
 
 **復元先パスの解決とポータビリティ**: `manifest.json` の各ファイルには絶対パス(`Destination`)に加え、`RootKind`(`"AppData"` または `"UserProfile"`)+ `RelativePath` が記録される(`PathCatalog.ToPortableRoot`)。リストア時は `PathCatalog.ResolvePortablePath` で現在の環境の `%APPDATA%` / `%USERPROFILE%` を基準に再解決し、別マシン・別ユーザーアカウントへのリストアに対応する。`RootKind`/`RelativePath` が無い旧形式バックアップでは `Destination` にフォールバックする。
 
@@ -46,6 +46,8 @@ MVVM構成(CommunityToolkit.Mvvm使用)。`MainViewModel` が `BackupViewModel` 
 **セキュリティ境界**: `manifest.json` は第三者から渡されたZIPの中身である可能性があり信用できない。そのため `RestoreService` は書き込み前に必ず `PathCatalog.IsAllowedRestoreDestination` で復元先が正規のClaude関連パス(`%APPDATA%\Claude`, `%USERPROFILE%\.claude`, `%USERPROFILE%\.claude.json`)配下であることを検証する(パストラバーサル対策)。新しい復元先パスを扱うコードを書く場合は必ずこの検証を通すこと。
 
 **リストアの安全な差し替え手順**: `RestoreService.RestoreCore` は「一時ファイルへ展開→成功したら既存ファイルを退避フォルダ(`%LOCALAPPDATA%\ClaudeBackupApp\PreRestoreEvacuation\yyyyMMdd_HHmmss\`)へ移動→一時ファイルを本来の場所へ移動」の順で行う。ZIPエントリ破損などで展開が失敗しても既存ファイルを失わないようにするための順序であり、変更しないこと。
+
+- **退避先フォルダの実在＝退避成功ではない**: `EvacuateIfExists` は `File.Move` の**前**に退避先の親フォルダを作るため、退避が全件失敗しても(復元先が使用中でロックされている場合など)フォルダだけは残る。復元失敗時に退避ファイルを元の場所へ戻す経路もあるため、フォルダが空になることもある。したがって「退避された元ファイルがあるか」を `Directory.Exists` で判定してはならない。`RestoreCore` が保持する退避件数(`onEvacuationUpdated` コールバックでUIへ通知)で判断すること。誤ると、元ファイルが保全されていないのに「退避済みの元ファイルは次の場所にあります」と案内してしまう。
 
 **Claude Desktop起動中の検知**: `ClaudeProcessService` はプロセス名 `claude` で列挙した上で、`FileVersionInfo.ProductName` が `"Claude Code"`(ターミナルの `claude` CLIやDesktop内蔵の `claude-code` バイナリ)と一致するものだけを除外し、それ以外はすべてDesktop本体(Electron製、製品名 `"Claude"`)として数える。積極的に「CLIだ」と判定できたものだけを除外し、それ以外(将来Desktop側の製品名表記が変わった場合や、モジュール情報取得に失敗した場合を含む)は「起動中かもしれない」側(true)に倒す安全側の実装になっている。
 
