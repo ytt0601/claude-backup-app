@@ -1,6 +1,7 @@
 # Claude Backup App
 
 [![CI](https://github.com/ytt0601/claude-backup-app/actions/workflows/ci.yml/badge.svg)](https://github.com/ytt0601/claude-backup-app/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/ytt0601/claude-backup-app/actions/workflows/codeql.yml/badge.svg)](https://github.com/ytt0601/claude-backup-app/actions/workflows/codeql.yml)
 
 Windows 版の **Claude Desktop / Claude Code / Cowork** の設定・データを、ワンボタンでバックアップし、
 バックアップファイルから元の状態にリストア（復元）できるデスクトップアプリです。
@@ -155,6 +156,7 @@ dotnet publish src/ClaudeBackupApp -c Release
 - 設計上の不変条件・セキュリティ境界の意図は [CLAUDE.md](CLAUDE.md) にまとめています。
   変更を加える前に一読してください（特にリストア処理の順序、パス検証、リスク分類の向き）
 - 仕様は [要件定義書.md](要件定義書.md) を参照
+- CI では毎 push・PR でビルドと単一 exe の発行を検証し、CodeQL による静的解析（`security-extended` スイート）を実行しています
 
 ## セキュリティ上の問題を見つけた場合
 

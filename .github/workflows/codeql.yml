@@ -1,0 +1,63 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # 毎週月曜 03:00 UTC (= 月曜 12:00 JST)。
+    # 新しいクエリが CodeQL 側に追加されたとき、コードを変更していなくても検出できるようにするため。
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  security-events: write   # 解析結果を Security タブへアップロードするために必要
+  contents: read
+  actions: read
+
+jobs:
+  analyze:
+    name: Analyze (csharp)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # C# は build-mode: none (ビルド不要の解析) も選べるが、そちらは精度が落ち、
+      # WPF の XAML から生成されるコードが解析対象外になる。
+      # このリポジトリは CI でビルドが通ることを確認済みのため、精度の高い manual を使う。
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+          build-mode: manual
+          # 既定の security スイートより検出範囲が広い。
+          # 認証情報とアーカイブ展開を扱うアプリのため広めに取っている。
+          # アラートのノイズが多すぎる場合は、この行を削除すると既定スイートに戻る。
+          queries: security-extended
+
+      # .slnx 形式のソリューションは SDK 8 では扱えないため 10 系が必要。
+      # 8.0.x も入れているのは net8.0 のランタイムを用意するため(CI と同じ構成)。
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        working-directory: ClaudeBackupApp
+        run: dotnet restore ClaudeBackupApp.slnx
+
+      # CodeQL の抽出器がコンパイルを観測できるよう、必ずクリーンな状態からビルドする
+      - name: Build
+        working-directory: ClaudeBackupApp
+        run: dotnet build ClaudeBackupApp.slnx -c Release --no-restore --no-incremental
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:csharp"
