@@ -108,6 +108,9 @@ Get-FileHash .\ClaudeBackupApp.exe -Algorithm SHA256
 # ビルド
 dotnet build ClaudeBackupApp.slnx
 
+# テスト
+dotnet test ClaudeBackupApp.slnx
+
 # 実行
 dotnet run --project src/ClaudeBackupApp
 
@@ -156,7 +159,9 @@ dotnet publish src/ClaudeBackupApp -c Release
 - 設計上の不変条件・セキュリティ境界の意図は [CLAUDE.md](CLAUDE.md) にまとめています。
   変更を加える前に一読してください（特にリストア処理の順序、パス検証、リスク分類の向き）
 - 仕様は [要件定義書.md](要件定義書.md) を参照
-- CI では毎 push・PR でビルドと単一 exe の発行を検証し、CodeQL による静的解析（`security-extended` スイート）を実行しています
+- テストは `tests/ClaudeBackupApp.Tests/`。パス検証・復元リスク分類・表示用エスケープなど、
+  ファイルシステムに触れない純粋な判定ロジックを対象にしています
+- CI では毎 push・PR でビルド・テスト・単一 exe の発行を検証し、CodeQL による静的解析（`security-extended` スイート）を実行しています
 
 ## セキュリティ上の問題を見つけた場合
 

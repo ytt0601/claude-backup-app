@@ -37,6 +37,10 @@ jobs:
         working-directory: ClaudeBackupApp
         run: dotnet build ClaudeBackupApp.slnx -c Release --no-restore -warnaserror
 
+      - name: Test
+        working-directory: ClaudeBackupApp
+        run: dotnet test ClaudeBackupApp.slnx -c Release --no-build --verbosity normal
+
       # 単一 exe の発行まで通ることを PR 時点で確認する
       # (self-contained + single-file はビルドが通っても発行で失敗しうるため)
       - name: Verify publish
