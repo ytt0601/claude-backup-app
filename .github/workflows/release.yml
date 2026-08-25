@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # 手動実行時はビルド成果物をワークフロー Artifact として残すだけで、Release は作成しない
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish single-file exe
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        working-directory: ClaudeBackupApp
+        run: dotnet restore ClaudeBackupApp.slnx
+
+      - name: Publish
+        working-directory: ClaudeBackupApp
+        run: dotnet publish src/ClaudeBackupApp -c Release --no-restore
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $exe = 'ClaudeBackupApp/src/ClaudeBackupApp/bin/Release/net8.0-windows/win-x64/publish/ClaudeBackupApp.exe'
+          if (-not (Test-Path $exe)) { throw "publish output not found: $exe" }
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item $exe 'artifacts/ClaudeBackupApp.exe'
+          # 未署名の exe を配布するため、利用者が同一性を検証できるようハッシュを併せて公開する
+          $hash = (Get-FileHash 'artifacts/ClaudeBackupApp.exe' -Algorithm SHA256).Hash.ToLower()
+          "$hash  ClaudeBackupApp.exe" | Out-File -Encoding ascii 'artifacts/ClaudeBackupApp.exe.sha256'
+          $sizeMb = [math]::Round((Get-Item 'artifacts/ClaudeBackupApp.exe').Length / 1MB, 1)
+          Write-Host "SHA256: $hash"
+          Write-Host "Size  : $sizeMb MB"
+          "SHA256=$hash" | Out-File -Encoding ascii -Append $env:GITHUB_ENV
+          "SIZE_MB=$sizeMb" | Out-File -Encoding ascii -Append $env:GITHUB_ENV
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeBackupApp
+          path: artifacts/
+          retention-days: 14
+
+      - name: Write release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $notes = Get-Content '.github/RELEASE_NOTES_TEMPLATE.md' -Raw -Encoding utf8
+          $notes = $notes.Replace('{{SIZE_MB}}', $env:SIZE_MB)
+          $notes = $notes.Replace('{{SHA256}}', $env:SHA256)
+          $notes = $notes.Replace('{{REPO}}', $env:GITHUB_REPOSITORY)
+          Set-Content -Path 'release-notes.md' -Value $notes -Encoding utf8
+          Write-Host $notes
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME artifacts/ClaudeBackupApp.exe artifacts/ClaudeBackupApp.exe.sha256 --title $env:GITHUB_REF_NAME --notes-file release-notes.md --verify-tag

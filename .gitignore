@@ -2,10 +2,24 @@
 bin/
 obj/
 *.user
+*.suo
+*.userprefs
 .vs/
+TestResults/
 
 ## publish output
 publish/
+
+## IDE
+.idea/
+*.swp
+
+## Claude Code (ローカル設定・作業領域)
+.claude/settings.local.json
+.claude/worktrees/
+
+## ログ・実行時生成物
+*.log
 
 ## OS
 Thumbs.db

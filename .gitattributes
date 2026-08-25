@@ -1,0 +1,29 @@
+# 既定: テキストファイルはリポジトリ内で LF に正規化し、チェックアウト時は各環境の慣習に従う
+* text=auto
+
+# Windows 向けの開発環境ファイルは常に CRLF
+*.sln    text eol=crlf
+*.slnx   text eol=crlf
+*.csproj text eol=crlf
+*.props  text eol=crlf
+*.targets text eol=crlf
+*.cmd    text eol=crlf
+*.bat    text eol=crlf
+*.ps1    text eol=crlf
+
+# シェルスクリプトは常に LF
+*.sh     text eol=lf
+
+# バイナリ(差分を取らない・改行変換をしない)
+*.ico    binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.zip    binary
+*.exe    binary
+*.dll    binary
+*.pdf    binary
+
+# 言語判定: ドキュメント類を統計から除外する
+*.md linguist-documentation
