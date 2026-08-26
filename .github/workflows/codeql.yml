@@ -24,13 +24,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # C# は build-mode: none (ビルド不要の解析) も選べるが、そちらは精度が落ち、
       # WPF の XAML から生成されるコードが解析対象外になる。
       # このリポジトリは CI でビルドが通ることを確認済みのため、精度の高い manual を使う。
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: csharp
           build-mode: manual
@@ -42,7 +42,7 @@ jobs:
       # .slnx 形式のソリューションは SDK 8 では扱えないため 10 系が必要。
       # 8.0.x も入れているのは net8.0 のランタイムを用意するため(CI と同じ構成)。
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
@@ -58,6 +58,6 @@ jobs:
         run: dotnet build ClaudeBackupApp.slnx -c Release --no-restore --no-incremental
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:csharp"
