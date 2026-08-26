@@ -19,9 +19,12 @@ dotnet run --project src/ClaudeBackupApp
 
 # 単一exe発行(自己完結・single-file、csprojに設定済み)
 dotnet publish src/ClaudeBackupApp -c Release
+
+# テスト
+dotnet test ClaudeBackupApp.slnx
 ```
 
-テストプロジェクトは現状存在しない。
+テストは `tests/ClaudeBackupApp.Tests`(xUnit)。UIやファイルシステムに触れない純粋関数 — `PathCatalog` のパス可搬性・復元先検証・リスク分類、`SettingsService` の保存先評価、`UntrustedText` のエスケープ、カテゴリ定義 — を対象としており、バックアップ/リストアの実処理そのものは対象外。
 
 ## アーキテクチャ
 

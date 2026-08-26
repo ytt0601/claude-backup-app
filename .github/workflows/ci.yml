@@ -20,8 +20,9 @@ jobs:
         uses: actions/checkout@v4
 
       # SDK 10 系でビルドする(ソリューションが .slnx 形式のため。.slnx は SDK 8 では扱えない)。
-      # 8.0.x も併せて入れているのは、net8.0 のランタイムを CI 上に用意しておくため。
-      # 将来テストプロジェクトを追加したとき、フレームワーク依存の testhost が起動できるようになる。
+      # 8.0.x も併せて入れているのは、フレームワーク依存で動くテストプロジェクト(net8.0-windows)を
+      # 本来のターゲットと同じランタイムで実行するため。テスト側の RollForward=LatestMajor により
+      # 10 系だけでも起動はできるが、CI では配布対象と同じ 8.0 で検証する。
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
