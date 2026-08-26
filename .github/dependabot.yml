@@ -1,0 +1,55 @@
+# 依存ライブラリと GitHub Actions の更新を Dependabot に自動追従させる設定。
+#
+# このアプリは認証情報を含むファイルを扱い、今後は暗号化処理を自前で持つ予定のため、
+# 依存先に既知の脆弱性が出たときに「気づかないまま放置される」状態を作らないことを優先する。
+# 他プロジェクトと並行して長期間コミットが無い期間があっても、更新 PR は届き続ける。
+#
+# 設定が正しく読み込まれているかは GitHub の
+# Insights → Dependency graph → Dependabot タブで確認できる(構文エラーはここに表示される)。
+
+version: 2
+
+updates:
+  # ---- NuGet パッケージ ----
+  # ソリューション(.slnx)ではなく各プロジェクトのフォルダを直接指定する。
+  # 本体(CommunityToolkit.Mvvm)とテスト(xUnit / Test.Sdk)で更新の性質が違うが、
+  # 数が少ないため PR はまとめて受け取る。
+  - package-ecosystem: "nuget"
+    directories:
+      - "/ClaudeBackupApp/src/ClaudeBackupApp"
+      - "/ClaudeBackupApp/tests/ClaudeBackupApp.Tests"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # マイナー・パッチ更新は1つの PR にまとめ、レビューの回数を減らす。
+      # メジャー更新は破壊的変更を含みうるため、あえてグループに入れず個別の PR にする。
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ---- GitHub Actions ----
+  # actions/checkout, actions/setup-dotnet, github/codeql-action, actions/upload-artifact が対象。
+  # ワークフローの action は .github/workflows/ を見るため、directory は常にリポジトリ直下を指す。
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
