@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # C# は build-mode: none (ビルド不要の解析) も選べるが、そちらは精度が落ち、
       # WPF の XAML から生成されるコードが解析対象外になる。
@@ -42,7 +42,7 @@ jobs:
       # .slnx 形式のソリューションは SDK 8 では扱えないため 10 系が必要。
       # 8.0.x も入れているのは net8.0 のランタイムを用意するため(CI と同じ構成)。
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
